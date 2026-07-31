@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111318">
+<title>SpeakTiger — Sync Test</title>
+<style>
+  :root {
+    --bg: #111318;
+    --fg: #f2f4f8;
+    --muted: #7c8698;
+    --accent: #4a86e8;
+    --warn: #e0a04a;
+    --bad: #e08a8a;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+  }
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 0; font-size: 13px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  #room { font-weight: 700; color: var(--fg); }
+  main {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+  }
+  #screen { font-size: 27vw; font-weight: 800; line-height: 1; }
+  #label { color: var(--muted); margin-top: 8px; font-size: 15px; }
+  #status { padding: 14px 0; text-align: center; font-size: 13px; color: var(--muted); }
+  .stale #status { color: var(--warn); }
+  .offline #status { color: var(--bad); }
+  .syncing #screen, .syncing #label { visibility: hidden; }
+  #syncing { display: none; font-size: 18px; color: var(--muted); }
+  .syncing #syncing { display: block; }
+  #controls { display: none; gap: 10px; padding-bottom: 16px; }
+  .host #controls, .offline #controls { display: flex; }
+  button {
+    flex: 1; padding: 20px 0; font-size: 18px; font-weight: 700;
+    border: 0; border-radius: 12px; background: #222634; color: var(--fg);
+  }
+  button:active { background: #2d3346; }
+  button.primary { background: var(--accent); }
+  #err { color: var(--bad); font-size: 13px; padding-bottom: 10px; text-align: center; }
+</style>
+</head>
+<body class="syncing">
+
+<header>
+  <span id="room">—</span>
+  <span id="mode"></span>
+</header>
+
+<main>
+  <div id="syncing">syncing…</div>
+  <div id="screen">–</div>
+  <div id="label">screen</div>
+</main>
+
+<div id="err"></div>
+<div id="status">starting…</div>
+
+<div id="controls">
+  <button id="prev">‹ Back</button>
+  <button id="next" class="primary">Next ›</button>
+</div>
+
+<script>
+/* ------------------------------------------------------------------
+   CONFIG
+------------------------------------------------------------------ */
+const API      = "https://speaktiger-sync.speaktiger.workers.dev";
+const POLL_MS  = 3000;    // TESTING. Ship at 15000.
+const STALE_MS = 15000;   // dim + warn
+const OFF_MS   = 30000;   // offline mode
+const MAX_SCREEN = 31;
+
+/* ------------------------------------------------------------------
+   STATE
+------------------------------------------------------------------ */
+const params = new URLSearchParams(location.search);
+const room   = params.get("r") || "lisbon";
+const key    = params.get("k");
+const isHost = !!key;
+
+let screenNo   = null;
+let lastOkAt   = 0;
+let manual     = null;   // offline override
+let firstLoad  = true;
+let wakeLock   = null;
+
+const $ = (id) => document.getElementById(id);
+$("room").textContent = room;
+$("mode").textContent = isHost ? "host" : "";
+if (isHost) document.body.classList.add("host");
+
+/* restore last known screen so a cold start on no signal shows something */
+try {
+  const cached = localStorage.getItem("st_screen_" + room);
+  if (cached !== null) screenNo = Number(cached);
+} catch (e) {}
+
+/* ------------------------------------------------------------------
+   RENDER
+------------------------------------------------------------------ */
+function render() {
+  const shown = manual !== null ? manual : screenNo;
+  $("screen").textContent = shown === null ? "–" : shown;
+  $("label").textContent  = manual !== null ? "manual" : "screen";
+
+  const age = Date.now() - lastOkAt;
+  document.body.classList.toggle("syncing", firstLoad);
+  document.body.classList.toggle("stale",   !firstLoad && age > STALE_MS && age <= OFF_MS);
+  document.body.classList.toggle("offline", !firstLoad && age > OFF_MS);
+
+  if (firstLoad)            $("status").textContent = "syncing…";
+  else if (age > OFF_MS)    $("status").textContent = "offline — pick the screen manually";
+  else if (age > STALE_MS)  $("status").textContent = "reconnecting…";
+  else                      $("status").textContent = "in sync";
+}
+
+/* ------------------------------------------------------------------
+   NETWORK
+------------------------------------------------------------------ */
+async function pull() {
+  try {
+    const res = await fetch(`${API}/state?r=${encodeURIComponent(room)}`, { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+
+    if (data.screen !== screenNo) {
+      screenNo = data.screen;
+      try { localStorage.setItem("st_screen_" + room, String(screenNo)); } catch (e) {}
+    }
+    lastOkAt  = Date.now();
+    firstLoad = false;
+    manual    = null;            // broadcast always wins on reconnect
+    $("err").textContent = "";
+  } catch (e) {
+    // silent — staleness is shown by the status line
+  }
+  render();
+}
+
+async function push(target) {
+  const body = { screen: target, endsAt: null, ts: Date.now() };
+  try {
+    const res = await fetch(
+      `${API}/state?r=${encodeURIComponent(room)}&k=${encodeURIComponent(key)}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    );
+    const data = await res.json();
+    if (!res.ok) { $("err").textContent = data.error || "write failed"; return; }
+    screenNo = data.screen;
+    lastOkAt = Date.now();
+    $("err").textContent = "";
+  } catch (e) {
+    $("err").textContent = "offline — change not sent";
+  }
+  render();
+}
+
+/* ------------------------------------------------------------------
+   CONTROLS
+------------------------------------------------------------------ */
+function step(delta) {
+  const base = manual !== null ? manual : (screenNo ?? 1);
+  const target = Math.min(MAX_SCREEN, Math.max(1, base + delta));
+
+  if (isHost && (Date.now() - lastOkAt) <= OFF_MS) {
+    push(target);
+  } else {
+    manual = target;             // guest offline, or host offline
+    render();
+  }
+}
+$("next").onclick = () => step(1);
+$("prev").onclick = () => step(-1);
+
+/* ------------------------------------------------------------------
+   WAKE LOCK
+------------------------------------------------------------------ */
+async function acquireWakeLock() {
+  if (!("wakeLock" in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => { wakeLock = null; });
+  } catch (e) { /* Low Power Mode etc — fail silently */ }
+}
+
+/* first user gesture stands in for the real "Test your phone" screen */
+document.body.addEventListener("click", acquireWakeLock, { once: true });
+
+/* ------------------------------------------------------------------
+   LIFECYCLE
+------------------------------------------------------------------ */
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    firstLoad = true;            // show "syncing…" rather than a stale number
+    render();
+    pull();
+    acquireWakeLock();
+  }
+});
+window.addEventListener("online", pull);
+
+pull();
+setInterval(pull, POLL_MS);
+setInterval(render, 1000);       // keeps the stale/offline timers honest
+</script>
+</body>
+</html>
