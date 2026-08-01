@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111318">
+<title>SpeakTiger — Sync Test v9</title>
+<style>
+  :root {
+    --bg: #111318;
+    --fg: #f2f4f8;
+    --muted: #7c8698;
+    --accent: #4a86e8;
+    --warn: #e0a04a;
+    --bad: #e08a8a;
+    --good: #7ac97a;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+  }
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 0; font-size: 13px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  #room { font-weight: 700; color: var(--fg); }
+  main {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+  }
+  #screen { font-size: 27vw; font-weight: 800; line-height: 1; }
+  #label { color: var(--muted); margin-top: 8px; font-size: 15px; }
+  #syncing { display: none; font-size: 18px; color: var(--muted); }
+  .syncing #screen, .syncing #label { display: none; }
+  .syncing #syncing { display: block; }
+  .offline #screen { opacity: .55; }
+
+  #status { padding: 12px 0 4px; text-align: center; font-size: 13px; color: var(--muted); }
+  .stale #status { color: var(--warn); }
+  .offline #status { color: var(--bad); }
+  #diag {
+    min-height: 42px; padding-bottom: 10px; text-align: center;
+    color: #4d5566; font-size: 11px; white-space: pre-line;
+  }
+  #err { color: var(--bad); font-size: 13px; text-align: center; padding-bottom: 6px; }
+
+  #wakebar { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; }
+  #wakestate { flex: 1; font-size: 12px; color: var(--muted); }
+  #wakestate.on { color: var(--good); }
+  #wakebtn { flex: 0 0 auto; padding: 12px 18px; font-size: 14px; }
+
+  #retrybar { display: none; padding-bottom: 10px; }
+  .stale #retrybar, .offline #retrybar { display: flex; }
+  #retrybar button { flex: 1; padding: 14px 0; font-size: 15px; }
+  #controls { display: none; gap: 10px; padding-bottom: 16px; }
+  .host #controls, .offline #controls { display: flex; }
+  button {
+    padding: 20px 0; font-size: 18px; font-weight: 700;
+    border: 0; border-radius: 12px; background: #222634; color: var(--fg);
+  }
+  #controls button { flex: 1; }
+  button:active { background: #2d3346; }
+  button.primary { background: var(--accent); }
+</style>
+</head>
+<body class="syncing">
+
+<header>
+  <span id="room">—</span>
+  <span id="mode"></span>
+</header>
+
+<main>
+  <div id="syncing">syncing…</div>
+  <div id="screen">–</div>
+  <div id="label">screen</div>
+</main>
+
+<div id="err"></div>
+<div id="status">starting…</div>
+<div id="diag"></div>
+
+<div id="wakebar">
+  <span id="wakestate">screen lock: not requested</span>
+  <button id="wakebtn">Keep screen on</button>
+</div>
+
+<div id="retrybar"><button id="retry">Retry connection</button></div>
+
+<div id="controls">
+  <button id="prev">‹ Back</button>
+  <button id="next" class="primary">Next ›</button>
+</div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------
+   CONFIG
+------------------------------------------------------------------ */
+const API_PRIMARY = "https://speaktiger-sync.speaktiger.workers.dev";
+
+/* Optional: put a second hostname for the same Worker/D1 state here.
+   Failover is sequential and sticky; the two endpoints are never raced. */
+const API_FALLBACK = "";
+
+const API_ENDPOINTS = [API_PRIMARY, API_FALLBACK]
+  .filter((value, index, all) => value && all.indexOf(value) === index)
+  .map((value) => value.replace(/\/+$/, ""));
+
+const POLL_MS = 15000;
+const TIMEOUT_MS = 8000;
+const RETRY_DELAYS_MS = [2000, 5000, 10000, 15000];
+const ENDPOINT_SWITCH_AFTER = 2;
+const LIFECYCLE_SETTLE_MS = 500;
+const STALE_MS = 25000;
+const OFF_MS = 60000;
+const MAX_SCREEN = 31;
+const ATTEMPT_LOG_LIMIT = 40;
+
+/* ------------------------------------------------------------------
+   STATE
+------------------------------------------------------------------ */
+const params = new URLSearchParams(location.search);
+const room = params.get("r") || "lisbon";
+const key = params.get("k");
+const isHost = !!key;
+const cacheKey = "st_state_" + room;
+const oldCacheKey = "st_screen_" + room;
+
+const startedAt = Date.now();
+let screenNo = null;
+let lastOkAt = 0;
+let manual = null;
+let haveData = false;
+let wakeLock = null;
+let swState = "none";
+
+let requestTimer = null;
+let requestDueAt = Infinity;
+let scheduledReason = "";
+let activeRequest = null;
+let pendingKick = null;
+let pendingWriteTarget = null;
+let hostDesiredTarget = null;
+
+let generation = 0;
+let lastAppliedGeneration = 0;
+let lastAppliedVersion = null;
+let endpointIndex = 0;
+let endpointTransportFails = 0;
+
+let pulls = 0;
+let writes = 0;
+let fails = 0;
+let timeouts = 0;
+let superseded = 0;
+let olderIgnored = 0;
+let lateIgnored = 0;
+let failovers = 0;
+let consecFails = 0;
+let lastErr = "";
+let cancelledWriteNotice = "";
+let lastAttempt = null;
+const attemptLog = [];
+
+const $ = (id) => document.getElementById(id);
+$("room").textContent = room;
+$("mode").textContent = isHost ? "host" : "";
+if (isHost) document.body.classList.add("host");
+try { performance.setResourceTimingBufferSize(2000); } catch (_) {}
+
+function normalizeVersion(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string" || value.trim() === "") return null;
+
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric;
+
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? date : null;
+}
+
+function validScreen(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 1 && number <= MAX_SCREEN
+    ? number
+    : null;
+}
+
+try {
+  const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
+  const cachedScreen = cached && typeof cached === "object"
+    ? validScreen(cached.screen)
+    : null;
+  if (cachedScreen !== null) {
+    screenNo = cachedScreen;
+    lastAppliedVersion = normalizeVersion(cached.updatedAt);
+  } else {
+    const oldScreen = validScreen(localStorage.getItem(oldCacheKey));
+    if (oldScreen !== null) screenNo = oldScreen;
+  }
+} catch (_) {
+  try {
+    const oldScreen = validScreen(localStorage.getItem(oldCacheKey));
+    if (oldScreen !== null) screenNo = oldScreen;
+  } catch (_) {}
+}
+
+/* ------------------------------------------------------------------
+   RENDER
+------------------------------------------------------------------ */
+function endpointLabel(index = endpointIndex) {
+  return index === 0 ? "A" : "B";
+}
+
+function render() {
+  const shown = manual !== null ? manual : screenNo;
+  $("screen").textContent = shown === null ? "–" : shown;
+
+  const age = Date.now() - (lastOkAt || startedAt);
+  const offline = age > OFF_MS;
+  const stale = !offline && age > STALE_MS;
+  const syncing = !haveData && !stale && !offline && shown === null;
+
+  $("label").textContent =
+    manual !== null ? "manual" : (haveData ? "screen" : "last known");
+
+  document.body.classList.toggle("syncing", syncing);
+  document.body.classList.toggle("stale", stale);
+  document.body.classList.toggle("offline", offline);
+
+  if (syncing) {
+    $("status").textContent = "syncing…";
+  } else if (offline) {
+    $("status").textContent = shown === null
+      ? "offline — no connection yet"
+      : "offline — pick the screen manually";
+  } else if (stale) {
+    $("status").textContent = "reconnecting…";
+  } else if (haveData) {
+    $("status").textContent = "in sync";
+  } else {
+    $("status").textContent = "syncing…";
+  }
+
+  const seconds = lastOkAt
+    ? Math.round((Date.now() - lastOkAt) / 1000) + "s ago"
+    : "never";
+  const active = activeRequest
+    ? activeRequest.kind + ":" + activeRequest.phase
+    : "0";
+  const recent = lastAttempt
+    ? `${lastAttempt.reason}/${lastAttempt.outcome} ${lastAttempt.elapsedMs}ms`
+    : "none";
+
+  $("diag").textContent =
+    `last ok: ${seconds} · GET ${pulls} · POST ${writes} · fails ${fails} · timeouts ${timeouts}\n` +
+    `onLine: ${navigator.onLine} · sw: ${swState} · active ${active} · api ${endpointLabel()} · failovers ${failovers}\n` +
+    `last: ${recent} · superseded ${superseded} · ignored ${olderIgnored}/${lateIgnored}` +
+    (lastErr ? `\n${lastErr}` : "");
+}
+
+/* ------------------------------------------------------------------
+   NETWORK — one lane and a deadline over headers, body, and JSON
+------------------------------------------------------------------ */
+class DeadlineError extends Error {
+  constructor(ms, phase) {
+    super(`deadline after ${ms}ms (${phase})`);
+    this.name = "DeadlineError";
+  }
+}
+
+class ProtocolError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ProtocolError";
+  }
+}
+
+class IgnoredResponseError extends Error {
+  constructor() {
+    super("response was superseded");
+    this.name = "IgnoredResponseError";
+  }
+}
+
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message || `HTTP ${status}`);
+    this.name = "HttpError";
+    this.status = status;
+  }
+}
+
+function describeError(error) {
+  if (!error) return "unknown error";
+  return `${error.name || "Error"}: ${error.message || String(error)}`;
+}
+
+function makeStateUrl(endpoint, record, includeKey) {
+  const url = new URL("/state", endpoint);
+  url.searchParams.set("r", room);
+  url.searchParams.set("rid", record.id);
+  url.searchParams.set("_", String(Date.now()));
+  if (includeKey) url.searchParams.set("k", key);
+  return url.href;
+}
+
+function captureProtocol(url) {
+  try {
+    const entries = performance.getEntriesByName(url);
+    const entry = entries[entries.length - 1];
+    return entry && entry.nextHopProtocol ? entry.nextHopProtocol : "?";
+  } catch (_) {
+    return "?";
+  }
+}
+
+async function fetchJsonWithinDeadline(record, url, options = {}) {
+  let timer = null;
+
+  const operation = (async () => {
+    record.phase = "headers";
+    const response = await fetch(url, {
+      ...options,
+      cache: "no-store",
+      credentials: "omit",
+      redirect: "error",
+      signal: record.controller.signal,
+    });
+
+    if (record.invalidated) throw new IgnoredResponseError();
+
+    record.phase = "body";
+    const text = await response.text();
+    if (record.invalidated) throw new IgnoredResponseError();
+
+    record.phase = "json";
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      throw new ProtocolError("invalid JSON response");
+    }
+
+    if (!response.ok) {
+      const message = data && typeof data.error === "string"
+        ? data.error
+        : `HTTP ${response.status}`;
+      throw new HttpError(response.status, message);
+    }
+
+    record.phase = "done";
+    return data;
+  })();
+
+  operation.then(
+    () => {
+      if (record.timedOut && !record.lateCounted) {
+        record.lateCounted = true;
+        lateIgnored++;
+      }
+    },
+    () => {
+      if (record.timedOut && !record.lateCounted) {
+        record.lateCounted = true;
+        lateIgnored++;
+      }
+    }
+  );
+
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      record.timedOut = true;
+      record.invalidated = true;
+      record.timeoutPhase = record.phase;
+      reject(new DeadlineError(TIMEOUT_MS, record.timeoutPhase));
+      try { record.controller.abort(); } catch (_) {}
+    }, TIMEOUT_MS);
+  });
+
+  try {
+    return await Promise.race([operation, deadline]);
+  } catch (error) {
+    if (record.timedOut) {
+      throw new DeadlineError(TIMEOUT_MS, record.timeoutPhase || record.phase);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function readPayload(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new ProtocolError("missing state object");
+  }
+
+  const nextScreen = validScreen(data.screen);
+  if (nextScreen === null) throw new ProtocolError("invalid screen value");
+
+  const version = normalizeVersion(data.updatedAt);
+  if (version === null) throw new ProtocolError("invalid updatedAt value");
+
+  return { screen: nextScreen, version };
+}
+
+function persistState(nextScreen, version) {
+  try {
+    localStorage.setItem(cacheKey, JSON.stringify({
+      screen: nextScreen,
+      updatedAt: version,
+    }));
+    localStorage.setItem(oldCacheKey, String(nextScreen));
+  } catch (_) {}
+}
+
+function applyServerState(data, record) {
+  if (record.invalidated) throw new IgnoredResponseError();
+
+  const state = readPayload(data);
+  if (record.generation < lastAppliedGeneration) {
+    olderIgnored++;
+    return null;
+  }
+
+  if (lastAppliedVersion !== null && state.version < lastAppliedVersion) {
+    olderIgnored++;
+    return null;
+  }
+
+  lastAppliedGeneration = record.generation;
+  screenNo = state.screen;
+  lastAppliedVersion = state.version;
+  persistState(screenNo, lastAppliedVersion);
+  return state;
+}
+
+function isTransportFailure(error) {
+  return !!error && (
+    error.name === "DeadlineError" ||
+    error.name === "TypeError" ||
+    error.name === "AbortError"
+  );
+}
+
+function noteEndpointSuccess(usedEndpoint) {
+  if (usedEndpoint === endpointIndex) endpointTransportFails = 0;
+}
+
+function noteEndpointFailure(usedEndpoint, error) {
+  if (usedEndpoint !== endpointIndex) return false;
+  if (!isTransportFailure(error)) {
+    endpointTransportFails = 0;
+    return false;
+  }
+
+  endpointTransportFails++;
+  if (
+    API_ENDPOINTS.length > 1 &&
+    endpointTransportFails >= ENDPOINT_SWITCH_AFTER
+  ) {
+    endpointIndex = (endpointIndex + 1) % API_ENDPOINTS.length;
+    endpointTransportFails = 0;
+    failovers++;
+    return true;
+  }
+
+  return false;
+}
+
+function markSuccess(data, record) {
+  const appliedState = applyServerState(data, record);
+  noteEndpointSuccess(record.endpoint);
+  lastOkAt = Date.now();
+  haveData = true;
+  if (appliedState) manual = null;
+  lastErr = "";
+  consecFails = 0;
+  $("err").textContent = cancelledWriteNotice;
+  return appliedState;
+}
+
+function retryDelay() {
+  const index = Math.min(
+    Math.max(consecFails - 1, 0),
+    RETRY_DELAYS_MS.length - 1
+  );
+  return RETRY_DELAYS_MS[index];
+}
+
+function jitter(ms) {
+  return ms + Math.floor(Math.random() * Math.min(1000, ms * 0.1));
+}
+
+function cancelScheduledRequest() {
+  if (requestTimer !== null) clearTimeout(requestTimer);
+  requestTimer = null;
+  requestDueAt = Infinity;
+  scheduledReason = "";
+}
+
+function scheduleRequest(delay, reason) {
+  if (document.visibilityState !== "visible") return;
+
+  const dueAt = Date.now() + Math.max(0, delay);
+  if (requestTimer !== null && requestDueAt <= dueAt) return;
+
+  cancelScheduledRequest();
+  requestDueAt = dueAt;
+  scheduledReason = reason;
+  requestTimer = setTimeout(() => {
+    const nextReason = scheduledReason || reason;
+    requestTimer = null;
+    requestDueAt = Infinity;
+    scheduledReason = "";
+    runRequest(nextReason);
+  }, Math.max(0, dueAt - Date.now()));
+}
+
+function supersedeActivePull(reason) {
+  if (!activeRequest || activeRequest.kind !== "pull") return;
+  if (!activeRequest.superseded) {
+    activeRequest.superseded = true;
+    activeRequest.invalidated = true;
+    activeRequest.supersededBy = reason;
+    try { activeRequest.controller.abort(); } catch (_) {}
+  }
+}
+
+function kick(reason, { supersede = false, delay = 0 } = {}) {
+  if (document.visibilityState !== "visible") return;
+
+  if (activeRequest) {
+    pendingKick = { reason, delay };
+    if (supersede) supersedeActivePull(reason);
+    render();
+    return;
+  }
+
+  scheduleRequest(delay, reason);
+}
+
+function newRecord(kind, reason) {
+  const nextGeneration = ++generation;
+  return {
+    id: `${Date.now().toString(36)}-${nextGeneration.toString(36)}`,
+    generation: nextGeneration,
+    kind,
+    reason,
+    endpoint: endpointIndex,
+    endpointLabel: endpointLabel(endpointIndex),
+    startedAt: performance.now(),
+    phase: "start",
+    visibility: document.visibilityState,
+    onLine: navigator.onLine,
+    controller: new AbortController(),
+    invalidated: false,
+    superseded: false,
+    timedOut: false,
+    timeoutPhase: "",
+    lateCounted: false,
+  };
+}
+
+function finishRecord(record, outcome, url) {
+  record.outcome = outcome;
+  record.elapsedMs = Math.round(performance.now() - record.startedAt);
+  record.protocol = captureProtocol(url);
+
+  const safe = {
+    id: record.id,
+    generation: record.generation,
+    kind: record.kind,
+    reason: record.reason,
+    endpoint: record.endpointLabel,
+    phase: record.timeoutPhase || record.phase,
+    outcome: record.outcome,
+    elapsedMs: record.elapsedMs,
+    protocol: record.protocol,
+    visibility: record.visibility,
+    onLine: record.onLine,
+  };
+  lastAttempt = safe;
+  attemptLog.push(safe);
+  if (attemptLog.length > ATTEMPT_LOG_LIMIT) attemptLog.shift();
+}
+
+async function pullOnce(record) {
+  pulls++;
+  const endpoint = API_ENDPOINTS[record.endpoint];
+  const url = makeStateUrl(endpoint, record, false);
+
+  try {
+    const data = await fetchJsonWithinDeadline(record, url);
+    const appliedState = markSuccess(data, record);
+    return {
+      ok: true,
+      switched: false,
+      outcome: appliedState ? "ok" : "older",
+      url,
+    };
+  } catch (error) {
+    if (record.superseded || error.name === "IgnoredResponseError") {
+      superseded++;
+      return { ok: false, switched: false, ignored: true, outcome: "superseded", url };
+    }
+
+    fails++;
+    consecFails++;
+    if (error.name === "DeadlineError") timeouts++;
+    const switched = noteEndpointFailure(record.endpoint, error);
+    lastErr = describeError(error) +
+      (switched ? ` · trying endpoint ${endpointLabel()}` : "");
+    return { ok: false, switched, outcome: "failed", url };
+  }
+}
+
+async function pushOnce(record, target) {
+  writes++;
+  const endpoint = API_ENDPOINTS[record.endpoint];
+  const url = makeStateUrl(endpoint, record, true);
+  const body = { screen: target, endsAt: null, ts: Date.now() };
+
+  try {
+    const data = await fetchJsonWithinDeadline(record, url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const appliedState = markSuccess(data, record);
+    if (!appliedState || appliedState.screen !== target) {
+      $("err").textContent = "change not confirmed — checking state";
+      return {
+        ok: false,
+        switched: false,
+        refreshSoon: true,
+        outcome: "unconfirmed",
+        url,
+      };
+    }
+    return { ok: true, switched: false, outcome: "ok", url };
+  } catch (error) {
+    fails++;
+    consecFails++;
+    if (error.name === "DeadlineError") timeouts++;
+    const switched = noteEndpointFailure(record.endpoint, error);
+    lastErr = describeError(error) +
+      (switched ? ` · checking endpoint ${endpointLabel()}` : "");
+    $("err").textContent = "offline — change not confirmed";
+    return { ok: false, switched, outcome: "failed", url };
+  }
+}
+
+async function runRequest(reason) {
+  if (activeRequest || document.visibilityState !== "visible") return;
+
+  const hasWrite = pendingWriteTarget !== null;
+  const target = hasWrite ? pendingWriteTarget : null;
+  if (hasWrite) pendingWriteTarget = null;
+
+  const record = newRecord(hasWrite ? "push" : "pull", reason);
+  activeRequest = record;
+  render();
+
+  let result = { ok: false, switched: false, outcome: "failed", url: "" };
+  try {
+    result = hasWrite
+      ? await pushOnce(record, target)
+      : await pullOnce(record);
+  } catch (error) {
+    fails++;
+    consecFails++;
+    lastErr = describeError(error);
+    result = { ok: false, switched: false, outcome: "failed", url: "" };
+  } finally {
+    finishRecord(record, result.outcome, result.url);
+    activeRequest = null;
+
+    if (hasWrite && pendingWriteTarget === null) {
+      hostDesiredTarget = null;
+    }
+
+    const queuedKick = pendingKick;
+    pendingKick = null;
+    render();
+
+    if (document.visibilityState !== "visible") return;
+
+    if (pendingWriteTarget !== null) {
+      scheduleRequest(0, "queued-write");
+    } else if (queuedKick) {
+      scheduleRequest(queuedKick.delay, queuedKick.reason);
+    } else if (result.switched) {
+      scheduleRequest(LIFECYCLE_SETTLE_MS, "endpoint-failover");
+    } else if (result.refreshSoon) {
+      scheduleRequest(LIFECYCLE_SETTLE_MS, "verify-write");
+    } else if (result.ignored) {
+      scheduleRequest(LIFECYCLE_SETTLE_MS, "after-supersede");
+    } else if (result.ok) {
+      scheduleRequest(jitter(POLL_MS), "poll");
+    } else {
+      scheduleRequest(jitter(retryDelay()), "retry");
+    }
+  }
+}
+
+function queuePush(target) {
+  pendingWriteTarget = target;
+  hostDesiredTarget = target;
+  cancelledWriteNotice = "";
+  $("err").textContent = "";
+  cancelScheduledRequest();
+
+  if (activeRequest) {
+    supersedeActivePull("host-write");
+  } else {
+    scheduleRequest(0, "host-write");
+  }
+  render();
+}
+
+/* A copy-safe diagnostic snapshot. It never includes the host key or URLs. */
+window.speakTigerDiagnostics = () => ({
+  room,
+  screen: screenNo,
+  haveData,
+  lastOkAt,
+  lastAppliedVersion,
+  endpoint: endpointLabel(),
+  endpointsConfigured: API_ENDPOINTS.length,
+  active: activeRequest ? {
+    id: activeRequest.id,
+    kind: activeRequest.kind,
+    reason: activeRequest.reason,
+    phase: activeRequest.phase,
+    endpoint: activeRequest.endpointLabel,
+  } : null,
+  counters: {
+    pulls, writes, fails, timeouts, superseded,
+    olderIgnored, lateIgnored, failovers, consecFails,
+  },
+  attempts: attemptLog.slice(),
+});
+
+/* ------------------------------------------------------------------
+   CONTROLS
+------------------------------------------------------------------ */
+function step(delta) {
+  if (isHost) {
+    cancelledWriteNotice = "";
+    $("err").textContent = "";
+  }
+  const base = isHost && hostDesiredTarget !== null
+    ? hostDesiredTarget
+    : (manual !== null ? manual : (screenNo ?? 1));
+  const target = Math.min(MAX_SCREEN, Math.max(1, base + delta));
+  const live = haveData && (Date.now() - lastOkAt) <= OFF_MS;
+
+  if (isHost && live) {
+    queuePush(target);
+  } else {
+    manual = target;
+    render();
+  }
+}
+
+$("next").onclick = () => step(1);
+$("prev").onclick = () => step(-1);
+
+/* ------------------------------------------------------------------
+   WAKE LOCK
+------------------------------------------------------------------ */
+function setWakeState(text, on) {
+  const element = $("wakestate");
+  element.textContent = "screen lock: " + text;
+  element.classList.toggle("on", !!on);
+}
+
+async function acquireWakeLock(quiet) {
+  if (!("wakeLock" in navigator)) {
+    setWakeState("not supported", false);
+    return;
+  }
+  if (wakeLock) {
+    setWakeState("held", true);
+    return;
+  }
+  if (document.visibilityState !== "visible") return;
+
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    setWakeState("held", true);
+    wakeLock.addEventListener("release", () => {
+      wakeLock = null;
+      setWakeState("released — tap the screen", false);
+    });
+  } catch (error) {
+    wakeLock = null;
+    if (!quiet) {
+      setWakeState(
+        "refused (" + (error.name || "error") + ") — check Low Power Mode",
+        false
+      );
+    } else {
+      setWakeState("tap the screen to keep it on", false);
+    }
+  }
+}
+
+$("wakebtn").onclick = () => acquireWakeLock(false);
+
+document.addEventListener("click", function onTap() {
+  acquireWakeLock(false).then(() => {
+    if (wakeLock) document.removeEventListener("click", onTap);
+  });
+}, { passive: true });
+
+/* ------------------------------------------------------------------
+   LIFECYCLE AND OFFLINE SHELL
+------------------------------------------------------------------ */
+function pauseForBackground(reason) {
+  cancelScheduledRequest();
+  if (pendingWriteTarget !== null) {
+    pendingWriteTarget = null;
+    hostDesiredTarget = null;
+    cancelledWriteNotice = "queued change cancelled — page was hidden";
+    $("err").textContent = cancelledWriteNotice;
+  }
+  if (activeRequest && activeRequest.kind === "pull") {
+    activeRequest.superseded = true;
+    activeRequest.invalidated = true;
+    activeRequest.supersededBy = reason;
+    try { activeRequest.controller.abort(); } catch (_) {}
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    kick("visible", { supersede: true, delay: LIFECYCLE_SETTLE_MS });
+    acquireWakeLock(true);
+  } else {
+    pauseForBackground("hidden");
+  }
+});
+
+window.addEventListener("online", () => {
+  kick("online", { supersede: true, delay: LIFECYCLE_SETTLE_MS });
+});
+window.addEventListener("offline", render);
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) {
+    kick("pageshow-bfcache", {
+      supersede: true,
+      delay: LIFECYCLE_SETTLE_MS,
+    });
+  }
+});
+window.addEventListener("pagehide", () => pauseForBackground("pagehide"));
+
+const noSW = params.get("nosw") === "1";
+const SW_SCOPE = new URL("./", location.href).href;
+const SW_URL = new URL("./sw_v2.js", location.href).href;
+const SHELL_CACHE_PREFIX = "speaktiger-speedfriending-shell-";
+let swRegistration = null;
+
+function isV2Worker(worker) {
+  return !!worker && worker.scriptURL === SW_URL;
+}
+
+function updateServiceWorkerState() {
+  if (noSW) {
+    swState = "disabled";
+    render();
+    return;
+  }
+
+  const controller = navigator.serviceWorker.controller;
+  const installing = swRegistration && swRegistration.installing;
+  const waiting = swRegistration && swRegistration.waiting;
+  const active = swRegistration && swRegistration.active;
+
+  if (controller) {
+    swState = isV2Worker(controller) ? "v2 controlling" : "old controlling";
+    if (!isV2Worker(controller) && isV2Worker(installing)) {
+      swState += " / v2 installing";
+    } else if (!isV2Worker(controller) && isV2Worker(waiting)) {
+      swState += " / v2 waiting";
+    }
+  } else if (isV2Worker(installing)) {
+    swState = "v2 installing";
+  } else if (isV2Worker(waiting)) {
+    swState = "v2 waiting";
+  } else if (isV2Worker(active)) {
+    swState = "v2 active";
+  } else {
+    swState = "registered";
+  }
+  render();
+}
+
+function watchServiceWorker(worker) {
+  if (!worker) return;
+  worker.addEventListener("statechange", updateServiceWorkerState);
+}
+
+function watchRegistration(registration) {
+  swRegistration = registration;
+  watchServiceWorker(registration.installing);
+  watchServiceWorker(registration.waiting);
+  watchServiceWorker(registration.active);
+  registration.addEventListener("updatefound", () => {
+    watchServiceWorker(registration.installing);
+    updateServiceWorkerState();
+  });
+  updateServiceWorkerState();
+}
+
+async function configureServiceWorker() {
+  if (!("serviceWorker" in navigator)) {
+    swState = "unsupported";
+    render();
+    return;
+  }
+
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    updateServiceWorkerState();
+  });
+
+  try {
+    if (noSW) {
+      swState = "disabled";
+      const registration = await navigator.serviceWorker.getRegistration("./");
+      if (registration && registration.scope === SW_SCOPE) {
+        await registration.unregister();
+      }
+      if (window.caches) {
+        const names = await window.caches.keys();
+        await Promise.all(
+          names
+            .filter((name) => name.startsWith(SHELL_CACHE_PREFIX))
+            .map((name) => window.caches.delete(name))
+        );
+      }
+    } else {
+      swState = "registering";
+      const registration = await navigator.serviceWorker.register(
+        "./sw_v2.js",
+        { scope: "./" }
+      );
+      watchRegistration(registration);
+    }
+  } catch (_) {
+    swState = noSW ? "disable failed" : "failed";
+  }
+  render();
+}
+
+$("retry").onclick = () => {
+  lastErr = "";
+  kick("manual-retry", { supersede: true });
+  render();
+};
+
+setInterval(render, 1000); // UI age only; this never starts a request.
+render();
+configureServiceWorker();
+scheduleRequest(0, "initial");
+</script>
+</body>
+</html>
