@@ -1,0 +1,2245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#dbe6f6">
+<title>SpeakTiger — Speed Friending 0.39 beta</title>
+<style>
+  /* ==================================================================
+     PALETTE — derived from the deck. Light only.
+  ================================================================== */
+  :root {
+    --bg:      #dbe6f6;   /* deck slide background */
+    --card:    #ffffff;
+    --fg:      #14161c;
+    --dim:     #3a4353;
+    --muted:   #78849a;
+    --line:    #b9c9e2;
+    --accent:  #3d81e8;   /* deck cover blue */
+    --green:   #77b34d;   /* deck accent bar */
+    --tagbg:   #c6dbf6;
+    --tagfg:   #12305e;
+    --warn:    #e8a13c;
+    --bad:     #d95d5d;
+    --good:    #5fb35f;
+    --move:    #b84ae0;
+    --stay:    #f0cf3a;
+    --onmove:  #ffffff;
+    --onstay:  #22200a;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg); color: var(--fg); position: relative;
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; height: 100dvh;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+
+  /* ---------- system banner (one treatment for every state) ---------- */
+  #banner {
+    display: none; flex: 0 0 auto; text-align: center;
+    font-size: clamp(10px, 1.3vmin, 13px); letter-spacing: .14em;
+    text-transform: uppercase; font-weight: 800;
+    padding: 6px 10px; color: #2a1c05; background: var(--warn);
+  }
+  #banner.on { display: block; }
+  #banner.bad { background: var(--bad); color: #fff; }
+  #banner.good { background: var(--good); color: #08240b; }
+  #banner.grey { background: #98a3b4; color: #14161c; }
+  .dot { opacity: .25; animation: blink 1.35s infinite; }
+  .dot:nth-child(2) { animation-delay: .22s; }
+  .dot:nth-child(3) { animation-delay: .44s; }
+  @keyframes blink { 0%,60%,100% { opacity: .25; } 30% { opacity: 1; } }
+
+  #testbtn.ok  { background: var(--good); color: #08240b; }
+  #testbtn.bad { background: var(--bad);  color: #fff; }
+
+  /* the round timer: consumed time filling left to right. Absent means no
+     clock is running, which is itself the information. */
+  #timer { display: none; flex: 0 0 auto; height: 7px; background: rgba(20,22,28,.10); overflow: hidden; }
+  #timer.on { display: block; }
+  #timerfill { height: 100%; width: 0%; background: var(--green); transition: width 1s linear; }
+  #timer.jump #timerfill { transition: none; }
+
+  header {
+    flex: 0 0 auto; position: relative; overflow: hidden;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 9px 16px; font-size: 12px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted); gap: 10px;
+  }
+  /* The hold indicator lives HERE, not inside the logo: a fingertip is wider
+     than the mark, so a fill under it is invisible to the person doing it. */
+  header::before {
+    content: ""; position: absolute; left: 0; top: 0; height: 100%; width: 0;
+    background: rgba(61,129,232,.16); pointer-events: none; z-index: 0;
+  }
+  body.holding header::before { width: 100%; transition: width var(--holddur, 1s) linear; }
+  header > * { position: relative; z-index: 1; }
+  #hostinfo, #mode { flex: 1 1 0; min-width: 0; white-space: nowrap; }
+  #hostinfo { display: flex; flex-direction: column; gap: 1px; align-items: flex-start; justify-content: center; }
+  #mode { display: flex; justify-content: flex-end; align-items: center; }
+  #roomlbl { font-weight: 800; color: var(--fg); }
+  /* host only. Underlined when it is the offline stopwatch — that is the one
+     state where the digits are a control rather than a readout. */
+  /* Same selection guard the logo has. Without it iOS raises the text callout
+     on a long press, which fires pointercancel and silently kills the reset —
+     on the one control that only exists for emergencies. */
+  /* host only. A 2s hold, same family of gesture as the tiger and the digits,
+     because sending the whole room back to screen 1 is not undoable. */
+  /* 22px icon, 44px finger target: the padding makes the target and the
+     negative margin keeps it out of the header's height. */
+  #home, #help {
+    background: none; box-shadow: none; padding: 11px; margin: -11px;
+    border-radius: 12px; color: var(--muted); line-height: 0; touch-action: none;
+    font: inherit; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  }
+  #home { display: none; }
+  .host #home { display: block; }
+  #home svg, #help svg { width: 22px; height: 22px; display: block; }
+  #home.pressing { background: rgba(20,22,28,.10); color: var(--fg); }
+  /* flex-centred rather than relying on line-height inside a fixed box —
+     that is what left the glyph sitting off the header's centre line */
+  /* Drawn, not typed. A text "?" is placed by baseline and has no descender,
+     so it landed about half a pixel below the line-box centre — visible next to
+     an SVG that is exact. Artwork also makes the box 22 + 22 = 44px wide by
+     construction: min-width could not, because box-sizing is border-box, so it
+     capped the whole button at 22px and padding ate it from the inside. */
+  #help {
+    display: flex; align-items: center; justify-content: center;
+  }
+  .host #help, .preview #help { display: none; }
+  /* a tint on press, not a restyle — its resting look is unchanged */
+  #help.pressed { color: var(--fg); background: rgba(20,22,28,.08); }
+  #hostclock {
+    font-variant-numeric: tabular-nums; font-weight: 800; color: var(--fg);
+    font-size: 26px; letter-spacing: 0; line-height: 1.05;
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  }
+  #hostclock.local { cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+  #hostclock.idle { color: var(--muted); }
+  #hostclock.over { color: var(--bad); }
+  /* sizing mirrored from the Soda app, centred instead of left */
+  #logowrap {
+    flex: 0 0 auto; position: relative; display: block; padding: 3px; border-radius: 11px;
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    transition: transform .13s ease, filter .13s ease;
+  }
+  /* Nothing at all for the first 500ms — a tap must look completely inert, or
+     the flicker is itself the invitation to hold and find out what it does. */
+  #logowrap.pressing { transform: scale(.95); filter: brightness(.9); transition-duration: .12s; }
+  #logo { display: block; height: 44px; width: auto; max-width: 170px; object-fit: contain; }
+  #logo.mark { height: 44px; width: 44px; }
+  @media (orientation: landscape) and (max-height: 520px) {
+    #logo { height: 32px; max-width: 130px; }
+    #logo.mark { height: 32px; width: 32px; }
+  }
+  #count { display: none; }
+  .host #count, .offline #count, .preview #count, .detached #count { display: block; }
+  #count {
+    text-align: center; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--muted); font-variant-numeric: tabular-nums; padding-bottom: 8px;
+  }
+
+  /* ---------- stage ---------- */
+  #stage { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column;
+           padding: clamp(8px, 1.2vh, 12px) 8px 10px; }
+  #syncmsg { flex: 1; display: none; align-items: center; justify-content: center; color: var(--muted); font-size: 18px; }
+  .syncing #stage { display: none; }
+  .syncing #syncmsg { display: flex; }
+
+  /* justify-content centres the whole group. The image used to be flex:1 1 0,
+     so it absorbed every spare pixel and pushed the title to the ceiling and
+     the tags to the floor on any screen with room to spare. */
+  /* gap, not margins on the image: when the image is hidden the margins went
+     with it and the title landed straight on the tags */
+  /* overflow:hidden clips at the PADDING box, so these 12px are what let the
+     image's shadow fade to nothing before anything cuts it. #stage gives the
+     same 12px back, so every element sits exactly where it did. */
+  .scr { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+         justify-content: center; gap: clamp(14px, 2.6vh, 26px);
+         padding: 0 12px; overflow: hidden; }
+  .scr.mid > .scr-head, .scr.mid > .body { width: 100%; max-width: min(100%, 880px); margin-inline: auto; }
+  .scr-head { flex: 0 0 auto; text-align: center; }
+  .eyebrow {
+    font-size: clamp(12px, 1.9vmin, 19px); letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted); font-weight: 800; margin-bottom: .35em;
+  }
+  /* An ideal size, not a safe one — fitTitle() shrinks whatever cannot fit on
+     one line, so short titles get the room long ones never had. */
+  /* overflow:hidden is the safety net for a title that cannot fit, but the clip
+     region is the padding box — and a 1.03 line box is shorter than the font's
+     real content area, so descenders fell outside it and lost their tails.
+     The padding extends the clip region without loosening the leading. */
+  h1 { margin: 0; font-weight: 800; line-height: 1.03; font-size: clamp(28px, 7.4vmin, 84px);
+       letter-spacing: -.02em; white-space: nowrap; overflow: hidden;
+       padding: .04em 0 .15em; }
+  /* screen 1 only: reads as a tag, so the cover already speaks the language of
+     every screen that follows */
+  .sub.covertag {
+    margin: 0; max-width: none; color: #1b3a6d; background: #d3e2f8;
+    border-radius: 8px; padding: .42em .7em; font-weight: 700;
+    font-size: clamp(20px, 4.2vmin, 48px);
+  }
+  .sub { margin: .5em auto 0; color: var(--dim); font-size: clamp(14px, 2.2vmin, 26px); line-height: 1.35; max-width: 34ch; }
+
+  /* image — the only flexible element */
+  /* A fixed-height window, height set per screen from its content weight.
+     Cropping rather than resizing keeps every image spanning the full column,
+     so the left and right edges line up through the whole deck. */
+  /* The flexible middle element. basis 0 means its height is purely the free
+     space the words leave behind — never the picture's own dimensions, so the
+     layout is already correct before any image has loaded. It grows into that
+     space, stops at square, and shrinks to nothing before the text gives way. */
+  /* The shadow is deliberately one-sided. #stage and .scr both clip, and the
+     image is flush with their side edges — a symmetric shadow gets sliced off
+     left and right, which is what makes it read as two flat bands instead of
+     depth. Negative spread pulls it back to zero sideways and lets it pool
+     under the lower edge, where a full-width card casts one anyway. */
+  .imgwrap { flex: 1 1 0; min-height: 0; width: 100%; align-self: stretch;
+             position: relative;
+             max-height: var(--imgcap, 60vh);
+             overflow: hidden; border-radius: 16px;
+             box-shadow: 0 8px 26px -10px rgba(20, 22, 28, .34),
+                         0 3px 8px -4px rgba(20, 22, 28, .20);
+             display: flex; align-items: center; justify-content: center; }
+  /* The placeholder used to be its own bordered box at height:100% while the
+     artwork sat absolutely at inset:0. On a fractional wrapper height the two
+     rounded to different device pixels and the dashed bottom border poked out
+     from under the image — one row, appearing and vanishing with anything that
+     shifted the stage, the status bar included. The fill now belongs to the
+     wrapper and this is only centred text, so there is no second edge. */
+  /* Positioned exactly like the <img> above it. A flex child at height:100%
+     and an absolute box at inset:0 round to different device pixels on a
+     fractional wrapper height, and whichever sits underneath shows through the
+     gap — first as a dashed border, then as a white line. Identical insets
+     cannot disagree. */
+  .ph {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    background: rgba(255, 255, 255, .4);
+  }
+  .imgwrap img { position: absolute; inset: 0; width: 100%; height: 100%;
+                 object-fit: cover; display: block; }
+
+  .body { flex: 0 0 auto; display: flex; flex-direction: column;
+          font-size: clamp(15px, 2.45vmin, 29px); gap: .98em; }
+
+  /* ---------- keyword cloud ---------- */
+  ul.tags {
+    list-style: none; margin: 0; padding: 0;
+    display: flex; flex-wrap: wrap; gap: .45em;
+  }
+  ul.tags li {
+    /* flex-fill: rows reach both edges, widths follow text length. Content-
+       sized pills were tried and reverted — the gaps came out uneven. */
+    flex: 1 1 auto; text-align: center;
+    border-radius: 8px;             /* rectangles read as tags, pills read as controls */
+    padding: .42em .7em;
+    font-weight: 700; font-size: 1.14em; line-height: 1.25;
+  }
+  /* info screens: one per line, all the same width, centred */
+  ul.tags.stack { display: grid; grid-template-columns: minmax(0, max-content); justify-content: center; }
+  ul.tags.stack li { flex: none; width: 100%; }
+  /* screen 9 only: chevrons are real rows, so the gap above and below each
+     one is the same value rather than the result of arithmetic */
+  ul.tags.flow { gap: .61em; }
+  ul.tags.flow li.chev {
+    background: none; padding: 0; width: 100%;
+    display: flex; align-items: center; justify-content: center;
+  }
+  ul.tags.flow li.chev svg { width: .89em; height: auto; display: block; }
+
+  /* Blue family only. Green, red, purple and yellow all carry meaning elsewhere
+     in the app — timer, offline, move, stay — so decoration cannot borrow them. */
+  .t-sky   { background: #d3e2f8; color: #1b3a6d; }
+  .t-cyan  { background: #cbe6ec; color: #14454f; }
+  .t-slate { background: #d9dee8; color: #2e3849; }
+
+  /* em-based so fitBody scales it with the rest of the body */
+  .follow { text-align: center; font-weight: 800; color: var(--dim); font-size: 1.2em; }
+  .follow a { color: var(--accent); font-weight: 900; text-decoration: none; }
+
+  /* ---------- question band ---------- */
+  .qband {
+    background: var(--card); border-left: 5px solid var(--green); border-radius: 12px;
+    padding: .65em .86em;
+  }
+  .qband .qhead {
+    font-size: .82em; font-weight: 800; color: var(--muted);
+    letter-spacing: .04em; margin-bottom: .45em;
+  }
+  .qband ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .29em; }
+  .qband li {
+    color: var(--dim); font-weight: 600; font-size: .90em; line-height: 1.3;
+    display: flex; gap: .55em;
+  }
+  .qband li::before { content: "\2014"; color: var(--muted); flex: 0 0 auto; }
+  .qsec + .qsec { margin-top: .82em; }
+
+  /* ---------- tip block ---------- */
+  .tip {
+    background: var(--card); border-left: 5px solid var(--accent); border-radius: 12px;
+    padding: .65em .86em;
+    display: flex; gap: .57em; align-items: center;
+  }
+  .tip .ico {
+    flex: 0 0 auto; width: 1.56em; height: 1.56em;
+    border-radius: 50%; background: var(--accent); color: #fff;
+    font-family: Georgia, "Times New Roman", serif; font-style: italic; font-weight: 700;
+    font-size: .78em; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* the tip IS the content on tip-only screens; sample questions are a fallback */
+  .tip p { margin: 0; color: var(--dim); font-weight: 600; font-size: 1.14em; line-height: 1.35; }
+
+  /* ---------- signature: TIME'S UP ---------- */
+  /* caps, no descenders: that padding is pure dead space above the image */
+  .scr.rot h1 { font-size: clamp(34px, 9vmin, 118px); letter-spacing: -.03em;
+                padding-bottom: .02em; margin-bottom: -.11em; }
+  .chips { display: flex; flex-direction: column; gap: .69em; }
+  .chip {
+    border-radius: 16px; padding: .67em .81em;
+    font-weight: 700; font-size: 1.76em; line-height: 1.2;
+  }
+  .chip b { font-weight: 900; }
+  .chip.move { display: flex; align-items: center; justify-content: space-between; gap: .7em; }
+  .chip .spin { flex: 0 0 auto; padding: 0; }
+  .chip .spin svg { width: 1.25em; }
+  .chip.move { background: var(--move); color: var(--onmove); }
+  .chip.stay { background: var(--stay); color: var(--onstay); }
+  .spin { flex: 0 0 auto; display: flex; justify-content: center; padding-top: clamp(2px, .8vmin, 10px); }
+  .spin svg { width: 3.43em; height: auto; animation: flip 4s infinite; }
+  @keyframes flip {
+    0%   { transform: rotate(0deg);   animation-timing-function: linear; }
+    34%  { transform: rotate(0deg);   animation-timing-function: cubic-bezier(.68,-.32,.28,1.34); }
+    50%  { transform: rotate(180deg); animation-timing-function: linear; }
+    84%  { transform: rotate(180deg); animation-timing-function: cubic-bezier(.68,-.32,.28,1.34); }
+    100% { transform: rotate(360deg); }
+  }
+
+  /* ---------- screen 3 ---------- */
+  .test { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 5vmin; text-align: center; }
+  #testbtn { align-self: center; min-width: min(60%, 320px); }
+
+  /* ---------- cover ---------- */
+  .cover { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: clamp(14px, 3.6vmin, 32px); }
+  .lozenge {
+    background: #14161c; color: #f4f6fa; border-radius: clamp(13px, 2.4vmin, 32px);
+    padding: clamp(9px, 2vmin, 28px) clamp(15px, 3.2vmin, 44px);
+    font-weight: 900; letter-spacing: -.02em; line-height: .96;
+    font-size: clamp(29px, 7.8vmin, 98px); text-align: center; flex: 0 0 auto;
+  }
+
+  /* ---------- host notes ---------- */
+  /* The panel used to sit IN the layout, which made the host's stage shorter
+     than the room's — the fit pass then shrank the text and squeezed the
+     images out. As an overlay the host sees exactly what the guests see.
+
+     Structure: a masked region whose bottom edge is the top of the controls,
+     so the sheet is clipped there instead of sliding across Back/Next. The
+     region is touch-transparent except the bar, or it would swallow taps
+     across half the screen while closed. */
+  #tipsmask {
+    display: none; position: absolute; left: 0; right: 0; top: 0;
+    bottom: var(--maskbot, 96px);          /* measured: the top of the controls */
+    overflow: hidden; pointer-events: none; z-index: 5;
+  }
+  .host #tipsmask { display: block; }
+  /* only while open: a tap on the region above the sheet dismisses it, the way
+     any scrim does. Closed, it stays transparent to touch so the stage works. */
+  body.tipsopen #tipsmask { pointer-events: auto; }
+  /* Auto height: short screens open small, dense ones open tall, and the cap
+     stops it at roughly three quarters of the viewport so the guest view stays
+     visible above it. The bar is a separate non-shrinking child, so it never
+     scrolls away — only #notes does, and only once the cap is reached. */
+  #tipsheet {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    pointer-events: auto; will-change: transform;
+    display: flex; flex-direction: column;
+    height: auto; max-height: min(84dvh, 100%);
+    transform: translateY(calc(100% - 46px));   /* closed: only the bar shows */
+  }
+  #tipsheet.glide { transition: transform .32s cubic-bezier(.22,.61,.36,1); }
+  #tipsbar {
+    display: flex; align-items: center; justify-content: center; gap: 9px;
+    flex: 0 0 46px; cursor: pointer; touch-action: none;
+    /* dark, echoing the wordmark: a white bar vanished into the white card,
+       and blue would compete with Next — the one control never to mis-tap */
+    background: #14161c; border-radius: 14px 14px 0 0;
+    box-shadow: 0 -8px 24px rgba(20,22,28,.18);
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    font-weight: 800; color: #cdd5e2;
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  }
+  #tipsarrow {
+    width: 9px; height: 9px; border-left: 2.5px solid #cdd5e2;
+    border-top: 2.5px solid #cdd5e2; transform: translateY(2px) rotate(45deg);
+    transition: transform .2s ease;
+  }
+  .tipsopen #tipsarrow { transform: translateY(-2px) rotate(225deg); }
+  #notes {
+    flex: 0 1 auto; min-height: 0;
+    overflow-y: auto; overflow-x: hidden;
+    -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+    background: #fff; color: #171923;
+    /* no safe-area inset here: body already applies it, and #notes stops 14px
+       above Back/Next, so a second one only wasted a home-indicator's height */
+    padding: 18px 16px 20px;
+  }
+  #notes > :last-child { margin-bottom: 0; }
+
+  /* ---------- host helper components (ht-) ---------- */
+  .ht-sec { border: 1px solid #dbe4f3; border-radius: 22px; padding: 14px; margin-bottom: 10px; }
+  .ht-talk { background: linear-gradient(180deg,#fffefb,#fffaf0); }
+  .ht-do   { background: linear-gradient(180deg,#fcfffc,#f4faf5); }
+  .ht-title { display: flex; align-items: center; gap: 9px; margin-bottom: 12px;
+              color: #39445c; font-size: 12px; font-weight: 850; letter-spacing: .12em;
+              text-transform: uppercase; }
+  .ht-title i { flex: 1; height: 1px; background: linear-gradient(90deg,rgba(103,132,196,.24),rgba(103,132,196,.08)); }
+
+  .ht-row { display: grid; grid-template-columns: 30px 1fr; gap: 11px; align-items: start; }
+  .ht-row + .ht-row { margin-top: 8px; }
+  .ht-num { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center;
+            background: #fff; border: 1px solid #e5dcc2; color: #5e6572; font-size: 14px; font-weight: 850; }
+  .ht-talktxt { font-size: 19px; line-height: 1.34; font-weight: 800; letter-spacing: -.02em; padding-top: 2px; }
+
+  .ht-check { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+              background: #ddf0e1; color: #367443; font-weight: 850; font-size: 14px; }
+  .ht-do .ht-row { grid-template-columns: 28px 1fr; gap: 10px; }
+  .ht-do .ht-row + .ht-row { margin-top: 11px; }
+  .ht-dotxt { font-size: 16.5px; line-height: 1.45; font-weight: 620; letter-spacing: -.01em;
+               padding-top: calc((28px - 1.45em) / 2); }
+
+  .ht-upnext { display: flex; align-items: center; gap: 10px; margin: 2px 2px 10px;
+               padding: 9px 12px; border-radius: 14px; background: #f4f7fb; color: #59667e; }
+  .ht-upnext-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .13em;
+                   font-weight: 850; color: #8390a5; }
+  .ht-upnext-txt { font-size: 14px; font-weight: 750; }
+
+  .ht-fold { border: 1px solid #dbe4f3; border-radius: 20px; background: #fff;
+             overflow: hidden; margin-bottom: 10px; }
+  .ht-fold > summary, .ht-special > summary {
+    list-style: none; cursor: pointer; display: flex; align-items: center;
+    justify-content: space-between; gap: 10px; padding: 14px 15px;
+  }
+  .ht-fold > summary::-webkit-details-marker, .ht-special > summary::-webkit-details-marker { display: none; }
+  .ht-fold-h { color: #39445c; font-size: 12px; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
+  .ht-fold-sub { font-size: 13px; color: #657086; font-weight: 550; margin-top: 4px; }
+  .ht-chev { font-size: 18px; color: #8792a8; transition: transform .2s; }
+  details[open] > summary .ht-chev { transform: rotate(180deg); }
+
+  /* deliberately airy and light: readable word-by-word, secondary to the cues */
+  .ht-script { font-size: 20px; line-height: 1.62; font-weight: 430;
+               letter-spacing: -.015em; color: #252a34; white-space: pre-line; }
+  .ht-fold-copy { padding: 0 15px 16px; }
+
+  .ht-special { border: 2px solid #efc9bd; border-radius: 22px;
+                background: linear-gradient(180deg,#fffdfc,#fff4f0);
+                overflow: hidden; margin-bottom: 10px; }
+  .ht-sp-head { display: flex; align-items: center; gap: 11px; }
+  .ht-alert { width: 34px; height: 34px; border-radius: 12px; display: grid; place-items: center;
+              background: #ffe1d8; color: #9a5042; font-size: 19px; font-weight: 900; flex: 0 0 auto; }
+  .ht-sp-title { font-size: 17px; line-height: 1.2; font-weight: 850; letter-spacing: -.015em; }
+  .ht-sp-sub { margin-top: 3px; font-size: 13px; line-height: 1.35; color: #765d58; font-weight: 550; }
+  .ht-sp-body { padding: 0 15px 15px; }
+  .ht-first { font-size: 15px; line-height: 1.42; font-weight: 650; color: #6d514a; margin: 1px 1px 12px; }
+
+  .ht-branch { border: 1px solid #ead6cf; border-radius: 18px; background: #fff; padding: 13px; }
+  .ht-branch + .ht-branch { margin-top: 11px; }
+  .ht-branch-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .ht-branch-name { font-size: 16px; font-weight: 850; letter-spacing: -.01em; }
+  .ht-badge { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; font-weight: 850;
+              color: #8e5448; background: #fff3ef; border-radius: 999px; padding: 6px 9px; white-space: nowrap; }
+  .ht-steps .ht-row { grid-template-columns: 28px 1fr; gap: 10px; }
+  .ht-steps .ht-row + .ht-row { margin-top: 9px; }
+  .ht-steps .ht-num { width: 28px; height: 28px; border-radius: 10px; background: #fff4ef;
+                      border: 1px solid #efd3ca; color: #965548; font-size: 13px; }
+  .ht-steptxt { font-size: 16.5px; line-height: 1.42; font-weight: 650; letter-spacing: -.01em;
+                 padding-top: calc((28px - 1.42em) / 2); }
+
+  .ht-room { margin-top: 12px; border: 1px solid #ead6cf; border-radius: 18px;
+             background: #fff9f7; padding: 13px; }
+  .ht-room-label { color: #8e5448; font-size: 11px; text-transform: uppercase;
+                   letter-spacing: .12em; font-weight: 850; margin-bottom: 11px; }
+  .ht-room-point { display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: start;
+                   font-size: 17px; line-height: 1.34; font-weight: 780; letter-spacing: -.015em; }
+  .ht-room-point + .ht-room-point { margin-top: 9px; }
+  /* squares, and green rather than the mockup's coral, so they cannot be
+     mistaken for another numbered action list */
+  /* centred on the first line, not eyeballed: (line-height − square) / 2 */
+  .ht-room-point i { width: 10px; height: 10px; border-radius: 2px; background: #557a49;
+                     margin-top: calc((1.34em - 10px) / 2); }
+  .ht-room-script { margin-top: 12px; padding-top: 12px; border-top: 1px solid #ecd8d1; }
+  .ht-room-script .ht-room-label { margin-bottom: 8px; }
+  .ht-room-script .ht-script { color: #302b2a; }
+
+  /* Guest self-serve. Deliberately static — a help request would need a guest
+     write path, a Worker deploy and a notification surface, and would still be
+     slower than the raised hand the ground rules already ask for.
+     Layout follows help_popup_redesign.html; the only deviation is Purple and
+     Yellow, which use the app's own --move and --stay so the popup teaches the
+     same colours the guest meets on the rotation screen and on their sticky. */
+  #helpsheet {
+    position: fixed; inset: 0; z-index: 20; display: flex;
+    align-items: center; justify-content: center;
+    padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+    background: rgba(27, 34, 52, .22);
+    backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+  }
+  #helpsheet[hidden] { display: none; }
+  #helpcard {
+    background: #fff; border-radius: 28px;
+    box-shadow: 0 18px 48px rgba(22,28,45,.18), 0 3px 10px rgba(22,28,45,.08);
+    padding: 22px 18px 18px; width: min(100%, 736px);
+    max-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    display: flex; flex-direction: column; gap: 16px;
+    color: #171923;
+  }
+  .hp-head { display: flex; align-items: flex-start; gap: 14px; padding: 4px 4px 0; }
+  .hp-icon {
+    width: 48px; height: 48px; border-radius: 16px; flex: 0 0 auto;
+    background: linear-gradient(180deg,#e9f1ff,#d9e8ff); color: #4f7fe6;
+    display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 800;
+  }
+  .hp-copy h2 { margin: 0; font-size: 25px; line-height: 1.08; letter-spacing: -.03em; }
+  .hp-copy p { margin: 6px 0 0; color: #5b6476; font-size: 15px; line-height: 1.35; font-weight: 600; }
+  .hp-stack { display: flex; flex-direction: column; gap: 12px; }
+  .hp-sec { border-radius: 22px; padding: 14px; border: 1px solid #dbe4f3; background: #fbfcff; }
+  .hp-primary { background: linear-gradient(180deg,#fbfcff 0%, #f6f9ff 100%); }
+  .hp-sectitle {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+    color: #39445c; font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;
+  }
+  .hp-rule { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(103,132,196,.24), rgba(103,132,196,.08)); }
+  /* centred, not baseline: the icons must not ride above their text */
+  .hp-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
+  .hp-emoji { width: 34px; height: 34px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; font-size: 28px; line-height: 1; }
+  .hp-emoji.hp-small { width: 28px; height: 28px; font-size: 24px; }
+  .hp-text { flex: 1; font-size: 18px; line-height: 1.34; font-weight: 750; letter-spacing: -.02em; }
+  .hp-split { display: grid; grid-template-columns: 1fr; gap: 10px; }
+  .hp-pill { border-radius: 18px; padding: 12px 14px; display: flex; align-items: center; gap: 10px; border: 1px solid transparent; }
+  .hp-purple { background: color-mix(in srgb, var(--move) 12%, #fff); border-color: color-mix(in srgb, var(--move) 30%, #fff); }
+  .hp-yellow { background: color-mix(in srgb, var(--stay) 18%, #fff); border-color: color-mix(in srgb, var(--stay) 45%, #fff); }
+  .hp-green  { background: #edf8ef; border-color: #d9ecdd; }
+  .hp-dot { width: 18px; height: 18px; border-radius: 50%; flex: 0 0 auto; box-shadow: inset 0 -2px 0 rgba(0,0,0,.12); }
+  .hp-d-purple { background: var(--move); }
+  .hp-d-yellow { background: var(--stay); }
+  .hp-label { display: block; font-size: 17px; line-height: 1.3; font-weight: 800; letter-spacing: -.02em; }
+  .hp-mini { display: block; margin-top: 2px; font-size: 14px; color: #5b6476; font-weight: 650; line-height: 1.32; }
+  /* the same button as Next: same fill, radius, weight and press treatment */
+  #helpclose {
+    width: 100%; border: 0; border-radius: 12px; padding: 18px 0;
+    background: var(--accent); color: #fff;
+    font-size: 17px; font-weight: 800; font-family: inherit; cursor: pointer;
+    box-shadow: 0 1px 0 var(--line);
+    transition: transform .13s ease, filter .13s ease;
+  }
+  #helpclose.pressed { transform: scale(.96); filter: brightness(.88); transition-duration: 0s; }
+  #helpclose:active  { transform: scale(.96); filter: brightness(.88); }
+  @media (min-width: 720px) {
+    #helpcard { padding: 26px 24px 20px; gap: 18px; }
+    .hp-copy h2 { font-size: 28px; }
+    .hp-split { grid-template-columns: 1fr 1fr; }
+  }
+
+  /* ---------- footer ---------- */
+  footer { flex: 0 0 auto; padding: 0 16px 10px; }
+  /* Reserved room for the overlaid bar: without it the bar sat on top of the
+     counter and clipped the retry row, because the footer had no idea the
+     space was taken. 46px bar + 14px clear below it. */
+  #tipsspacer { display: none; height: 60px; }
+  .host #tipsspacer { display: block; }
+  #diag { display: none; text-align: center; font-size: 10.5px; color: var(--muted); opacity: .8; padding: 4px 0 6px; }
+  body.debug #diag { display: block; }
+  #wakebar { display: none; align-items: center; gap: 10px; padding-bottom: 10px; }
+  body.debug #wakebar { display: flex; }
+  #wakestate { flex: 1; font-size: 12px; color: var(--muted); }
+  #wakestate.on { color: #2f7a2f; }
+  #retrybar { display: none; gap: 8px; padding-bottom: 8px; }
+  /* Debug only. The loop already retries every 4s on its own, and Hard reset
+     is a development tool that has no business sitting in the trouble UI. */
+  body.debug.stale #retrybar, body.debug.offline #retrybar { display: flex; }
+  #retrybar button { flex: 1; padding: 13px 0; font-size: 14px; }
+  #controls { display: none; gap: 10px; }
+  .host #controls, .offline #controls, .preview #controls, .detached #controls { display: flex; }
+  button {
+    padding: 18px 0; font-size: 17px; font-weight: 800; border: 0; border-radius: 12px;
+    background: var(--card); color: var(--fg); font-family: inherit; cursor: pointer; box-shadow: 0 1px 0 var(--line);
+  }
+  /* the global tap-highlight reset removes the native press flash, and a
+     brightness shift alone is invisible on a near-white button — movement is
+     what reads as "pressed" across a room */
+  #controls button { flex: 1; transition: transform .13s ease, filter .13s ease; }
+  /* .pressed is applied instantly and eases back on release; :active still
+     covers mouse and keyboard, where holding makes it visible anyway */
+  #controls button.pressed { transform: scale(.96); filter: brightness(.88); transition-duration: 0s; }
+  #controls button:active  { transform: scale(.96); filter: brightness(.88); }
+  button:active { filter: brightness(.95); }
+  button.primary { background: var(--accent); color: #fff; }
+  button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- projector / wide ---------- */
+  @media (min-width: 900px) {
+    #stage { padding: clamp(16px, 2.6vh, 34px) calc(5vw - 12px) 2vh; }
+    /* the cover is image-led: shrink the wordmark so the square can take the height */
+    .cover { gap: 1.4vh; }
+    .cover .lozenge { font-size: clamp(28px, 6vh, 70px); }
+    .scr.split {
+      display: grid; grid-template-columns: minmax(0,5fr) minmax(0,7fr);
+      grid-template-rows: auto minmax(0,1fr); gap: clamp(16px, 2.6vh, 32px) 4vw; align-items: center;
+    }
+    .scr.split .scr-head { grid-column: 1 / -1; }
+    /* height:100% of a minmax(0,1fr) row is the row, exactly — recreating that
+       in JS is what made the image overshoot and fitBody shrink the body in
+       the other column down to its floor. */
+    .scr.split .imgwrap { margin: 0; min-height: 0; align-self: center; height: 100%; }
+    /* centred grid items overflow BOTH ways when taller than the track —
+       that is what put tags over the title and cut the tip off. */
+    .scr.split > .body { min-height: 0; max-height: 100%; overflow: hidden; }
+    /* tip matches tag size here; it was reading small next to rounds and chips */
+  }
+  /* Narrow only. Once the image is gone the leftover space should sit below
+     the content, not be split above and below it — centring made screen 13
+     look as though there was room for an image that had just been removed. */
+  @media (max-width: 899px) {
+    /* Content hangs from the header instead of floating below it. The gap used
+       to be whatever each screen had left over — 99px on one, 52px on another,
+       under a fixed logo. .rot and the covers are deliberate announcements and
+       stay centred. */
+    .scr.split:not(.rot) { justify-content: flex-start; }
+    .scr.noimg { justify-content: flex-start; }
+  }
+  @media (prefers-reduced-motion: reduce) { .spin svg, .dot { animation: none; } #controls button { transition: none; } }
+</style>
+</head>
+<body class="syncing wake">
+
+<div id="banner"></div>
+<div id="timer"><div id="timerfill"></div></div>
+
+<header>
+  <span id="hostinfo"><b id="roomlbl"></b><span id="hostclock"></span></span>
+  <span id="logowrap"><img id="logo" class="mark" src="speaktiger-footer-sqr.png" alt="SpeakTiger" draggable="false"></span>
+  <span id="mode"><button id="help" type="button" aria-label="Help"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 8.6a4.3 4.3 0 1 1 5.9 4l-1.8 1.3v1.6"/><circle cx="12" cy="19.6" r="1.25" fill="currentColor" stroke="none"/></svg></button><button id="home" type="button" aria-label="Back to screen 1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9.5V20h13V9.5"/></svg></button></span>
+</header>
+
+<div id="syncmsg">syncing…</div>
+<div id="stage"></div>
+
+<footer>
+  <div id="diag"></div>
+  <div id="wakebar">
+    <span id="wakestate">screen lock: not requested</span>
+  </div>
+  <div id="retrybar"><button id="retry">Retry connection</button><button id="hard">Hard reset</button></div>
+  <div id="count"></div>
+  <div id="helpsheet" hidden>
+  <div id="helpcard" role="dialog" aria-modal="true" aria-labelledby="help-title">
+    <div class="hp-head">
+      <div class="hp-icon">?</div>
+      <div class="hp-copy">
+        <h2 id="help-title">Quick help</h2>
+        <p>Everything you need for the evening.</p>
+      </div>
+    </div>
+
+    <div class="hp-stack">
+      <section class="hp-sec hp-primary">
+        <div class="hp-sectitle"><span>Start</span><i class="hp-rule"></i></div>
+        <div class="hp-row"><div class="hp-emoji">🪑</div><div class="hp-text">Table # and colour are on your sticky.</div></div>
+        <div class="hp-row"><div class="hp-emoji">🔎</div><div class="hp-text">Find your seat.</div></div>
+      </section>
+
+      <section class="hp-sec">
+        <div class="hp-sectitle"><span>Follow</span><i class="hp-rule"></i></div>
+        <div class="hp-row"><div class="hp-emoji">👉</div><div class="hp-text">Follow the host's instructions.</div></div>
+      </section>
+
+      <section class="hp-sec">
+        <div class="hp-sectitle"><span>Movement</span><i class="hp-rule"></i></div>
+        <div class="hp-split">
+          <div class="hp-pill hp-purple">
+            <div class="hp-dot hp-d-purple"></div>
+            <div><span class="hp-label">Purple moves</span><span class="hp-mini">Go to the next table.</span></div>
+          </div>
+          <div class="hp-pill hp-yellow">
+            <div class="hp-dot hp-d-yellow"></div>
+            <div><span class="hp-label">Yellow stays</span><span class="hp-mini">Stay in the same seat.</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="hp-sec">
+        <div class="hp-sectitle"><span>If something goes wrong</span><i class="hp-rule"></i></div>
+        <div class="hp-pill hp-green">
+          <div class="hp-emoji hp-small">✋</div>
+          <div><span class="hp-label">Phone not working?</span><span class="hp-mini">Raise your hand and we'll help.</span></div>
+        </div>
+      </section>
+    </div>
+
+    <button id="helpclose" type="button">Got it</button>
+  </div>
+</div>
+
+<div id="tipsmask">
+    <div id="tipsheet">
+      <div id="tipsbar"><i id="tipsarrow"></i><span>Host tips</span></div>
+      <div id="notes"></div>
+    </div>
+  </div>
+  <div id="tipsspacer"></div>
+  <div id="controls">
+    <button id="prev">‹ Back</button>
+    <button id="next" class="primary">Next ›</button>
+  </div>
+</footer>
+
+<script>
+/* ==================================================================
+   CONTENT — 32 screens. Data, not code.
+   tags = keyword cloud (deck).  qs = spare questions (handout), 3 each.
+================================================================== */
+const SCREENS = [
+{ n:1, type:"cover",
+  sub:"we'll start shortly",
+  img:{ id:"cover", ratio:"1/1", label:"cover photo — room in use" }, },
+
+{ n:2, type:"instruction",
+  title:"Take your seat",
+  tip:"Your sticky has a table number and a colour. Find the table and take your seat.",
+  img:{ id:"sticky", ratio:"4/3", label:"sticky note — purple + yellow" }, },
+
+{ n:3, type:"test",
+  title:"Test your phone", sub:"Tap the button below.",
+  btn:"I'm ready",
+  okTitle:"You're all set", okSub:"Keep this page open.", okBtn:"Connected",
+  badTitle:"✋ Raise your hand",
+  badSub:["Looks like you're offline.","The app still works on your phone.","We'll bring you a paper version too, just in case."],
+  badBtn:"No connection", },
+
+{ n:4, type:"cover", brandOnly:true, },
+
+{ n:5, type:"info",
+  title:"What to expect",
+  tags:["Meeting new people","Structured 1-on-1 way","Rounds of conversations"],
+  img:{ id:"what", ratio:"4/3", label:"illustration — pairs at tables" }, },
+
+{ n:6, type:"info",
+  title:"The screen",
+  tags:["📋 topics","⭐ keywords","📃 list of questions"],
+  tip:"Everything is on the screen. Stuck? Pick something, or just go with the flow.",
+  img:{ id:"anatomy", ratio:"4/3", label:"phone + paper sheet — NEW artwork" }, },
+
+{ n:7, type:"info",
+  title:"‼️ Ground rules",
+  tags:["✅ be present","✅ be open","✅ be respectful","❌ no private questions","❌ do not persist","🙋 raise hand"],
+  tagColors:["sky","sky","sky","slate","slate","cyan"],
+  img:{ id:"rules", ratio:"4/3", label:"illustration — four people talking" }, },
+
+{ n:8, type:"info",
+  title:"⏳ Each round is 8 minutes",
+  tags:["⏲️ change seats when time's up","📱 exchange contacts (if you like)","✅ extra time at the end of the event"],
+  img:{ id:"clock", ratio:"4/3", label:"hand holding clock" }, },
+
+{ n:9, type:"info",
+  title:"The structure", flow:true,
+  tags:["💬 5 rounds","⏰ 10 min break","💬 4 rounds","👯 1 group round","🔀 free flow"],
+  img:{ id:"runorder", ratio:"4/3", label:"illustration — two people talking" }, },
+
+{ n:10, type:"info",
+  title:"‼️ Changing tables",
+  tip:"Purple moves. Yellow stays.",
+  img:{ id:"rotation", ratio:"4/3", label:"table render — purple + yellow stickies, arrows" }, },
+
+/* ---------------- ROUNDS 1–5 ---------------- */
+{ n:11, type:"round", secs:510, round:1, title:"Work",
+  tags:["Work place","Field","Remote or office","Hardest tasks","Why this job?","What's next?"],
+  img:{ id:"r1", ratio:"4/3", label:"round 1 image" },
+  qs:["What do you do for a living?","If you didn't have to work for money, would you still do the same job?","Why did you decide to choose this career path?"], },
+
+{ n:12, type:"rotate", title:"TIME'S UP", next:2, nextTitle:"Travelling & Adventures" },
+
+{ n:13, type:"round", secs:510, round:2, title:"Travelling & Adventures",
+  tags:["Best trip","Beach or mountains?","Go-back city","Planned or spontaneous?"],
+  img:{ id:"r2", ratio:"4/3", label:"round 2 image" },
+  qs:["What's your most memorable trip?","What trip surprised you the most?","What place would you recommend to anyone?"], },
+
+{ n:14, type:"rotate", title:"TIME'S UP", next:3, nextTitle:"Films & Music" },
+
+{ n:15, type:"round", secs:510, round:3, title:"Films & Music",
+  tags:["Watch again","Your favorite actor","Best concert","Music you grew up with"],
+  img:{ id:"r3", ratio:"4/3", label:"round 3 image" },
+  qs:["What's your all-time favorite movie and why?","Cinema or watching at home?","What concert blew you away?"], },
+
+{ n:16, type:"rotate", title:"TIME'S UP", next:4, nextTitle:"Education" },
+
+{ n:17, type:"round", secs:510, round:4, title:"Education",
+  tags:["What you studied","A subject you hated","School memory","Studying vs. real life"],
+  img:{ id:"r4", ratio:"4/3", label:"round 4 image" },
+  qs:["Where did you go to university? What's your major?","Do you wish you studied something different?","Is education important for success?"], },
+
+{ n:18, type:"rotate", title:"TIME'S UP", next:5, nextTitle:"Hobbies" },
+
+{ n:19, type:"round", secs:510, round:5, title:"Hobbies",
+  tags:["Could do for hours","Want to try","Turn a hobby into a job?","A childhood hobby you still love"],
+  img:{ id:"r5", ratio:"4/3", label:"round 5 image" },
+  qs:["What hobby do you enjoy?","Is there a hobby you've always wanted to try?","If you could turn a hobby into a career, what would it be?"], },
+
+/* ---------------- BREAK ---------------- */
+{ n:20, type:"instruction",
+  title:"‼️ Memorize your seat",
+  tip:"Same table, same seat after the break.",
+  img:{ id:"memorize", ratio:"4/3", label:"chair + memory illustration" }, },
+
+{ n:21, type:"break", secs:630,
+  title:"10 minute break",
+  tip:"Return to your seat when the break ends.",
+  img:{ id:"intermission", ratio:"4/3", label:"intermission card" }, },
+
+{ n:22, type:"rotate", title:"MOVE NOW", next:6, nextTitle:"Fashion & Style", afterBreak:true },
+
+/* ---------------- ROUNDS 6–9 ---------------- */
+{ n:23, type:"round", secs:510, round:6, title:"Fashion & Style",
+  tags:["Favorite brand or store","Comfort or style?","Favorite color","Dress to impress?"],
+  img:{ id:"r6", ratio:"4/3", label:"round 6 image" },
+  qs:["Who or what inspires your sense of style?","What's your favorite brand or designer?","Practical pieces or statement items? Why?"], },
+
+{ n:24, type:"rotate", title:"TIME'S UP", next:7, nextTitle:"Goals & Dreams" },
+
+{ n:25, type:"round", secs:510, round:7, title:"Goals & Dreams",
+  tags:["Big dream","Proud of","Want to change","A risk you took"],
+  img:{ id:"r7", ratio:"4/3", label:"round 7 image" },
+  qs:["What's the dream you're chasing now?","What's something you're proud of?","Do New Year's resolutions work for you?"], },
+
+{ n:26, type:"rotate", title:"TIME'S UP", next:8, nextTitle:"Cultural differences" },
+
+{ n:27, type:"round", secs:510, round:8, title:"Cultural differences",
+  tags:["Cool custom","Miss from home","Still surprises you","Cultural habit"],
+  img:{ id:"r8", ratio:"4/3", label:"round 8 image" },
+  qs:["What's a unique tradition from your culture?","Have you ever experienced a culture shock?","What custom from another culture fascinates you?"], },
+
+{ n:28, type:"rotate", title:"TIME'S UP", next:9, nextTitle:"Food" },
+
+{ n:29, type:"round", secs:510, round:9, title:"Food",
+  tags:["Favorite dish","Favorite drink","Cooking at home","Eating out","Food you dislike","Favorite restaurant"],
+  img:{ id:"r9", ratio:"4/3", label:"round 9 image" },
+  qs:["What's a dish or drink you can't live without?","Sweet or savory snacks?","Is there any food you dislike?"], },
+
+/* ---------------- CLOSE ---------------- */
+{ n:30, type:"instruction",
+  title:"Merge tables",
+  tip:"Sit together. Form bigger groups. Your host will guide you.",
+  img:{ id:"merge", ratio:"4/3", label:"merged tables — NEW artwork" }, },
+
+{ n:31, type:"group", secs:510, round:10, title:"Group round",
+  tags:["dream purchase","philanthropy","travel","fund","investment","big risk"],
+  bands:[
+    { head:"Introduce yourself to others:", items:["Say your name 🧑","What you do 💼"] },
+    { head:"If you won a lottery:", items:["Would you quit working or keep your job?","How would you spend money?"] }
+  ],
+  img:{ id:"r10", ratio:"4/3", label:"group round image" }, },
+
+{ n:32, type:"closing",
+  title:"Thank you!",
+  tip:"The official part is over. Stay as long as you like — chat with anyone.",
+  handle:"@speaktiger_pt", handleUrl:"https://www.instagram.com/speaktiger_pt/",
+  img:{ id:"closing", ratio:"4/3", label:"closing card" }, },
+];
+
+/* Host helper content — generated from Speed_Friending_Host_Tips_UI_Ready_v1.md
+   and verified string-by-string against it. Not derived from say/cues. */
+const HOST_TIPS = [
+ {"n": 1, "name": "Waiting for guests", "talk": ["Check in + sticky notes", "Bar", "We'll start shortly"], "script": "Let me check you in. While we're waiting for everyone to arrive, feel free to grab a drink at the bar. We'll start shortly.", "do": ["Set up the table cards according to the seating plan.", "Check each guest's name when they arrive.", "Hand out a sticky note with the correct colour and table number."]},
+ {"n": 2, "name": "Take your seat", "talk": ["Sticky number = your table", "Find your seat", "Raise your hand if you need help"], "script": "Your sticky has a table number and a colour. The number is your table. Find it and take your seat.\nIf you need help, raise your hand.", "do": ["Point guests towards the tables.", "Help anyone who cannot find their seat.", "Check the room before moving on: nobody should still be standing or looking lost."]},
+ {"n": 3, "name": "Test your phone", "talk": ["Tap the button", "Green = ready", "Red = raise your hand", "App works offline", "Paper backup"], "script": "Tap the button on your screen. It should turn green.\nIf it turns red, raise your hand. The app still works offline, but you'll need to move through the screens manually.\nI'll also bring you a paper version, just in case.", "do": ["Wait while everyone tests their phone.", "Count the raised hands.", "Give a paper question sheet to anyone whose phone is not working.", "Do not move on until everyone has either the app or a paper backup."]},
+ {"n": 4, "name": "Welcome", "talk": ["Welcome", "Your name", "You're the host", "Meet new people", "Make real connections"], "script": "Welcome to Speed Friending!\nMy name is ___, and I'm your host tonight.\nLook around - everyone here came to meet new people.\nThe goal tonight is simple: have good conversations, make real connections, and hopefully leave with some new friends.", "do": ["Get everyone's attention before you start.", "Make sure the room is quiet enough to hear you."]},
+ {"n": 5, "name": "What to expect", "talk": ["One-on-one conversations", "Several rounds", "New person each round", "Each round has a topic"], "script": "Tonight you'll meet people one-on-one.\nWe'll have several conversation rounds. Each round has a topic, and you'll talk with one person at a time.\nThe structure is there to make meeting new people easier.", "do": ["Keep this explanation short.", "Make sure everyone understands that the event is structured into rounds."]},
+ {"n": 6, "name": "How to use the screen", "talk": ["Topic on the screen", "Keywords for ideas", "Sample questions if you get stuck", "Use them or go with the flow"], "script": "Every round has a topic.\nOn your screen, you'll see some keywords and sample questions. They're there to help if you're not sure what to talk about.\nYou can use them, or you can just follow the conversation naturally. You don't have to answer every question or stay exactly on the topic.", "do": ["Make sure guests know the questions are optional.", "Remind anyone using the paper backup that it works the same way."]},
+ {"n": 7, "name": "Ground rules", "talk": ["Be present", "Be open", "Be respectful", "No private questions", "Don't push", "Raise your hand if you need help"], "script": "A few simple rules.\nBe present, be open, and be respectful.\nPlease avoid private questions. If someone doesn't want to answer something, that's completely fine - don't push.\nAnd if you need help at any point, just raise your hand and I'll come over.", "do": ["Say this clearly and seriously.", "Make sure guests know they can call you over at any time."]},
+ {"n": 8, "name": "Timing", "talk": ["8 minutes", "Move when time is up", "Don't delay the next round", "Exchange contacts if you want", "Free time at the end"], "script": "Each round is eight minutes.\nWhen time is up, the screen will tell you when to move. Please move straight away so we can start the next round on time.\nYou can exchange contacts if you want to - there's no pressure.\nAnd there'll be free time at the end if you want to continue any conversation.", "do": ["Make sure everyone understands they should move only when the round ends.", "Emphasise that exchanging contacts is optional."]},
+ {"n": 9, "name": "Event structure", "talk": ["5 one-on-one rounds", "10-minute break", "4 more one-on-one rounds", "1 group round", "Free flow"], "script": "Here's how the evening works.\nFirst, we'll have five one-on-one rounds.\nThen we'll take a ten-minute break.\nAfter the break, we'll have four more one-on-one rounds, then one group round.\nAfter that, the structured part is finished and we'll have free-flow time.", "do": ["Give guests a quick overview only.", "No need to explain the topics yet."]},
+ {"n": 10, "name": "How to change tables", "talk": ["Yellow = stay", "Purple = move", "Move after every round", "Follow the table arrow", "Raise your hand if unsure"], "script": "Now the important part: changing tables.\nIf your sticky is yellow, you stay in the same seat for the whole event.\nIf your sticky is purple, you move after every round.\nWhen the round ends, check the arrow on your table. It shows you which table to go to next.\nIf you're not sure where to go, raise your hand.", "do": ["Check the seating plan."], "special": [{"title": "If not all tables are occupied", "actions": ["Address the last occupied table.", "Tell the room: last-table purple guest goes to Table 1 after the round."], "roomTalk": ["Last occupied table", "Purple guest moves to Table 1", "After every round"], "roomScript": "One more thing: not all the tables are occupied tonight.\nIf you're the purple guest at the last occupied table, when the round ends, go to Table 1."}, {"title": "If the number of guests is odd", "actions": ["Address the room.", "Identify the purple guest at the last table.", "Explain that we have an odd number of guests.", "Explain: last-table guest has the solo round + questionnaire.", "Explain that there will be a lucky draw at the end."], "roomTalk": ["One solo guest each round", "Questionnaire during the solo round", "Solo guest changes every round", "Lucky draw after Round 9", "Free drink"], "roomScript": "One more thing: tonight we have an odd number of guests.\nThat means one person will have a solo round each time.\nThe purple guest at the last table will be solo first. During the round, you'll get a short questionnaire to fill in.\nThe solo guest changes every round.\nAt the end, we'll draw one questionnaire at random, and one person will get a free drink."}]},
+ {"n": 11, "name": "Round 1: work", "talk": ["Work", "What you do", "Why you chose it", "Remote or office", "8 minutes"], "script": "Round 1 is about work.\nWhat do you do? Why did you choose it? Do you work remotely or in an office? What do you like or dislike about your job?\nYou have eight minutes. Let's start.", "do": ["Announce the round.", "Walk around the room and check that everyone is talking and nobody needs help."], "special": [{"title": "If not all tables are occupied", "actions": ["Go to the last occupied table.", "Tell the purple guest: \"When time's up, go to Table 1.\""]}, {"title": "If the number of guests is odd", "actions": ["The guest at the last table will be alone.", "Give the solo guest a questionnaire.", "Remind them where to leave it when finished (vase from the bar).", "Tell them: \"When time's up, go to Table 1.\""]}]},
+ {"n": 12, "name": "Time's up", "talk": ["Time's up", "Purple moves - follow the arrow", "Yellow stays"], "upNext": "Travelling & Adventures", "script": "Time's up.\nPurple, move to the next table. Follow the arrow.\nYellow, stay where you are.", "do": ["Wait until everyone has moved and is seated.", "Do not start the next round while people are still moving."], "special": [{"title": "If not all tables are occupied", "actions": ["Check that the purple guest from the last occupied table moved to Table 1."]}, {"title": "If the number of guests is odd", "actions": ["Check that the previous solo guest moved to Table 1.", "Check that the next purple guest arrived at the solo table."]}]},
+ {"n": 13, "name": "Round 2: travelling & adventures", "talk": ["Travelling & adventures", "Favourite trip", "Planned or spontaneous", "Where next?", "8 minutes"], "script": "This round is about travelling and adventures.\nWhat was your favourite trip? Do you like to plan everything or decide at the last minute? Where would you like to go next?\nYou have eight minutes. Let's start.", "do": ["Announce the round.", "Walk around the room and check that everyone is talking and nobody needs help."], "special": [{"title": "If not all tables are occupied", "actions": ["Go to the last occupied table.", "Tell the purple guest: \"When time's up, go to Table 1.\""]}, {"title": "If the number of guests is odd", "actions": ["The guest at the last table will be alone.", "Give the solo guest a questionnaire.", "Remind them where to leave it when finished (vase from the bar).", "Tell them: \"When time's up, go to Table 1.\""]}]},
+ {"n": 14, "name": "Time's up", "talk": ["Time's up", "Purple moves - follow the arrow", "Yellow stays"], "upNext": "Films & Music", "script": "Time's up.\nPurple, move to the next table. Follow the arrow.\nYellow, stay where you are.", "do": ["Wait until everyone has moved and is seated.", "Do not start the next round while people are still moving."], "special": [{"title": "If not all tables are occupied", "actions": ["Check that the purple guest from the last occupied table moved to Table 1."]}, {"title": "If the number of guests is odd", "actions": ["Check that the previous solo guest moved to Table 1.", "Check that the next purple guest arrived at the solo table."]}]},
+ {"n": 15, "name": "Round 3: films & music", "talk": ["Films & music", "Film you'd watch again", "Favourite actor", "Music you grew up with", "Best concert", "8 minutes"], "script": "This round is about films and music.\nWhat film could you watch again and again? Who's your favourite actor? What music did you grow up with? What's the best concert you've been to?\nYou have eight minutes. Let's start.", "do": ["Announce the round.", "Walk around the room and check that everyone is talking and nobody needs help."], "special": [{"title": "If not all tables are occupied", "actions": ["Go to the last occupied table.", "Tell the purple guest: \"When time's up, go to Table 1.\""]}, {"title": "If the number of guests is odd", "actions": ["The guest at the last table will be alone.", "Give the solo guest a questionnaire.", "Remind them where to leave it when finished (vase from the bar).", "Tell them: \"When time's up, go to Table 1.\""]}]},
+ {"n": 16, "name": "Time's up", "talk": ["Time's up", "Purple moves - follow the arrow", "Yellow stays"], "upNext": "Education", "script": "Time's up.\nPurple, move to the next table. Follow the arrow.\nYellow, stay where you are.", "do": ["Wait until everyone has moved and is seated.", "Do not start the next round while people are still moving."], "special": [{"title": "If not all tables are occupied", "actions": ["Check that the purple guest from the last occupied table moved to Table 1."]}, {"title": "If the number of guests is odd", "actions": ["Check that the previous solo guest moved to Table 1.", "Check that the next purple guest arrived at the solo table."]}]},
+ {"n": 17, "name": "Round 4: education", "talk": ["Education", "What you studied", "Favourite / hated subjects", "Same field now?", "Would you study something else?", "8 minutes"], "script": "This round is about education.\nWhat did you study? What subjects did you like or hate? Are you working in the same field now? Is there anything you wish you had studied instead?\nYou have eight minutes. Let's start.", "do": ["Announce the round.", "Walk around the room and check that everyone is talking and nobody needs help."], "special": [{"title": "If not all tables are occupied", "actions": ["Go to the last occupied table.", "Tell the purple guest: \"When time's up, go to Table 1.\""]}, {"title": "If the number of guests is odd", "actions": ["The guest at the last table will be alone.", "Give the solo guest a questionnaire.", "Remind them where to leave it when finished (vase from the bar).", "Tell them: \"When time's up, go to Table 1.\""]}]},
+ {"n": 18, "name": "Time's up", "talk": ["Time's up", "Purple moves - follow the arrow", "Yellow stays"], "upNext": "Hobbies", "script": "Time's up.\nPurple, move to the next table. Follow the arrow.\nYellow, stay where you are.", "do": ["Wait until everyone has moved and is seated.", "Do not start the next round while people are still moving."], "special": [{"title": "If not all tables are occupied", "actions": ["Check that the purple guest from the last occupied table moved to Table 1."]}, {"title": "If the number of guests is odd", "actions": ["Check that the previous solo guest moved to Table 1.", "Check that the next purple guest arrived at the solo table."]}]},
+ {"n": 19, "name": "Round 5: hobbies", "talk": ["Last round before the break", "Hobbies", "Free-time activities", "Something you want to try", "Childhood hobbies", "8 minutes"], "script": "This is the last round before the break.\nThe topic is hobbies and things you enjoy doing in your free time.\nWhat can you do for hours without getting bored? Is there something new you'd like to try? What hobbies did you have as a child?\nYou have eight minutes. Let's start.", "do": ["Announce the round.", "Remind everyone that the break comes next.", "Walk around the room and check that everyone is talking and nobody needs help."], "special": [{"title": "If not all tables are occupied", "actions": ["Go to the last occupied table.", "Tell the purple guest: \"Don't move when time's up. Stay in your seat for the break instructions.\""]}, {"title": "If the number of guests is odd", "actions": ["The guest at the last table will be alone.", "Give the solo guest a questionnaire.", "Remind them where to leave it when finished (vase from the bar).", "Tell them: \"Don't move when time's up. Stay in your seat for the break instructions.\""]}]},
+ {"n": 20, "name": "Before the break", "talk": ["Remember your seat", "Same table, same seat after the break", "10-minute break", "Grab a drink / go outside / relax"], "script": "Before we take a break, look at where you're sitting now.\nAfter the break, come back to the same table and the same seat. This is important.\nThe break is ten minutes. Feel free to grab a drink, go outside, or just relax.", "do": ["Make sure everyone understands they must return to the same seat.", "Tell everyone what time the break ends."]},
+ {"n": 21, "name": "Break", "do": ["Take a break.", "A few minutes before the break ends, check outside and around the cafe.", "Tell guests that we're starting again.", "Make sure everyone comes back to the room."]},
+ {"n": 22, "name": "Move after the break", "talk": ["Same seat as before the break", "Purple moves - follow the arrow", "Yellow stays"], "upNext": "Fashion & Style", "script": "Welcome back.\nFirst, make sure you're in the same seat as before the break.\n[Pause and wait until everyone is seated.]\nNow, purple, move to the next table. Follow the arrow.\nYellow, stay where you are.", "do": ["First, wait until everyone is back in the same seat as before the break.", "Wait until everyone has moved and is seated.", "Do not start Round 6 while people are still moving."], "special": [{"title": "If guests left during the break", "first": ["Check if the number of guests is even or odd."], "branches": [{"title": "If the number is even", "actions": ["No changes are needed.", "Continue with the normal rotation."], "badge": "No change"}, {"title": "If the number is odd", "actions": ["Find the guest who is now without a partner.", "Take them to the last table.", "Tell them: \"You're purple now. This is your solo round.\"", "Give them a questionnaire.", "Show them where to leave it when finished (vase from the bar).", "Tell them: \"When time's up, go to Table 1.\""], "badge": "Act now"}], "roomTalk": ["Some guests left", "Odd number now", "One solo guest each round", "Questionnaire during solo round", "Lucky draw + free drink"], "roomScript": "A few guests left during the break, so we now have an odd number.\nThat means one person will have a solo round each time. If that's you, I'll give you a questionnaire to fill in.\nAt the end, we'll draw one questionnaire at random, and one person will get a free drink."}]},
+ {"n": 23, "name": "Round 6: fashion & style", "talk": ["Fashion & style", "Favourite brands / shops", "Online or in-store", "Comfort or style", "8 minutes"], "script": "This round is about fashion and style.\nWhat brands or shops do you like? Do you prefer shopping online or in stores? What's more important to you - comfort or style?\nYou have eight minutes. Let's start.", "do": ["Announce the round.", "Walk around the room and check that everyone is talking and nobody needs help."], "special": [{"title": "If not all tables are occupied", "actions": ["Go to the last occupied table.", "Tell the purple guest: \"When time's up, go to Table 1.\""]}, {"title": "If the number of guests is odd", "actions": ["The guest at the last table will be alone.", "Give the solo guest a questionnaire.", "Remind them where to leave it when finished (vase from the bar).", "Tell them: \"When time's up, go to Table 1.\""]}]},
+ {"n": 24, "name": "Time's up", "talk": ["Time's up", "Purple moves - follow the arrow", "Yellow stays"], "upNext": "Goals & Dreams", "script": "Time's up.\nPurple, move to the next table. Follow the arrow.\nYellow, stay where you are.", "do": ["Wait until everyone has moved and is seated.", "Do not start the next round while people are still moving."], "special": [{"title": "If not all tables are occupied", "actions": ["Check that the purple guest from the last occupied table moved to Table 1."]}, {"title": "If the number of guests is odd", "actions": ["Check that the previous solo guest moved to Table 1.", "Check that the next purple guest arrived at the solo table."]}]},
+ {"n": 25, "name": "Round 7: goals & dreams", "talk": ["Goals & dreams", "What's your next goal?", "Something you're proud of", "A risk you took", "8 minutes"], "script": "This round is about goals and dreams.\nWhat do you want to achieve next? Is there something you're really proud of? Have you ever taken a big risk?\nYou have eight minutes. Let's start.", "do": ["Announce the round.", "Walk around the room and check that everyone is talking and nobody needs help."], "special": [{"title": "If not all tables are occupied", "actions": ["Go to the last occupied table.", "Tell the purple guest: \"When time's up, go to Table 1.\""]}, {"title": "If the number of guests is odd", "actions": ["The guest at the last table will be alone.", "Give the solo guest a questionnaire.", "Remind them where to leave it when finished (vase from the bar).", "Tell them: \"When time's up, go to Table 1.\""]}]},
+ {"n": 26, "name": "Time's up", "talk": ["Time's up", "Purple moves - follow the arrow", "Yellow stays"], "upNext": "Cultural Differences", "script": "Time's up.\nPurple, move to the next table. Follow the arrow.\nYellow, stay where you are.", "do": ["Wait until everyone has moved and is seated.", "Do not start the next round while people are still moving."], "special": [{"title": "If not all tables are occupied", "actions": ["Check that the purple guest from the last occupied table moved to Table 1."]}, {"title": "If the number of guests is odd", "actions": ["Check that the previous solo guest moved to Table 1.", "Check that the next purple guest arrived at the solo table."]}]},
+ {"n": 27, "name": "Round 8: cultural differences", "talk": ["Cultural differences", "Interesting customs", "What surprised you?", "What do you miss from home?", "8 minutes"], "script": "We all come from different places, with different cultures and customs.\nLet's talk about the differences you find interesting. What surprised you in another culture? Is there something you miss from home? What customs do you find interesting?\nYou have eight minutes. Let's start.", "do": ["Announce the round.", "Walk around the room and check that everyone is talking and nobody needs help."], "special": [{"title": "If not all tables are occupied", "actions": ["Go to the last occupied table.", "Tell the purple guest: \"When time's up, go to Table 1.\""]}, {"title": "If the number of guests is odd", "actions": ["The guest at the last table will be alone.", "Give the solo guest a questionnaire.", "Remind them where to leave it when finished (vase from the bar).", "Tell them: \"When time's up, go to Table 1.\""]}]},
+ {"n": 28, "name": "Time's up", "talk": ["Time's up", "Purple moves - follow the arrow", "Yellow stays"], "upNext": "Food", "script": "Time's up.\nPurple, move to the next table. Follow the arrow.\nYellow, stay where you are.", "do": ["Wait until everyone has moved and is seated.", "Do not start the next round while people are still moving."], "special": [{"title": "If not all tables are occupied", "actions": ["Check that the purple guest from the last occupied table moved to Table 1."]}, {"title": "If the number of guests is odd", "actions": ["Check that the previous solo guest moved to Table 1.", "Check that the next purple guest arrived at the solo table."]}]},
+ {"n": 29, "name": "Round 9: food", "talk": ["Last one-on-one round", "Food", "Favourite places to eat", "Favourite dishes / cuisines", "Food you dislike", "Sweet or savoury", "8 minutes"], "script": "This is our last one-on-one round.\nThe topic is food.\nWhat are your favourite places to eat in the city? What dishes or cuisines do you love? Is there any food you really don't like? Sweet or savoury?\nYou have eight minutes. Let's start.", "do": ["Announce the round.", "Walk around the room and check that everyone is talking and nobody needs help."], "special": [{"title": "If not all tables are occupied", "actions": ["Go to the last occupied table.", "Tell the purple guest: \"You're not moving anywhere after this round.\""]}, {"title": "If the number of guests is odd", "actions": ["The guest at the last table will be alone.", "Give the solo guest a questionnaire.", "Remind them where to leave it when finished (vase from the bar).", "Tell them: \"You're not moving anywhere after this round.\""]}, {"title": "After the round - if the number of guests is odd", "actions": ["Take one questionnaire at random from the vase.", "Announce the name on the questionnaire.", "Tell them they've won a free drink.", "Ask what they would like.", "Order the drink for them."]}]},
+ {"n": 30, "name": "Merge tables", "talk": ["One-on-one rounds finished", "Merge nearby tables", "Groups of 4-8", "Move chairs if needed", "Host will help"], "script": "That's the end of the one-on-one rounds.\nNow let's make bigger groups.\nJoin the people at the tables next to you. Move your chairs if needed. We want groups of around four to eight people.\nI'll come around and help.", "do": ["Merge neighbouring tables into groups of 4-8 people.", "Check that every guest is part of a group.", "Help people move chairs and find space where needed.", "Do not start the group round until everyone is seated."]},
+ {"n": 31, "name": "Group round", "talk": ["Introduce yourself", "Name", "What you do", "You won the lottery", "Quit or keep working?", "How would you spend it?", "Talk in turns", "8 minutes"], "script": "Now introduce yourselves to the whole group.\nGo around the table. Say your name and what you do.\nThen imagine you won the lottery.\nWould you quit your job or keep working?\nAnd how would you spend the money?\nTalk in turns.\nYou have eight minutes. Let's start.", "do": ["Check that every group has started talking.", "If someone comes back after the groups are formed, help them find a group."]},
+ {"n": 32, "name": "Thank you / free flow", "talk": ["Thank everyone", "Official part is over", "Free flow", "Meet someone new", "Continue a conversation", "Stay as long as you like", "Follow SpeakTiger on Instagram"], "script": "The official part is finished. Thank you all for coming!\nNow it's free flow.\nTalk to someone you haven't met yet, or go back to someone you'd like to talk to more.\nStay as long as you like.\nAnd if you want to see our next events and photos, follow SpeakTiger on Instagram.", "do": ["Let people mix freely.", "Stay available if anyone needs help."]}
+];
+
+if (HOST_TIPS.length !== SCREENS.length || HOST_TIPS.some((h, i) => h.n !== i + 1)) {
+  console.error("HOST_TIPS screen map is invalid");
+}
+
+/* ==================================================================
+   CONFIG — unchanged from v11
+================================================================== */
+const API_MAIN   = "https://sync.speaktiger.app";
+const API_OLD    = "https://speaktiger-sync.speaktiger.workers.dev";
+const POLL_MS    = 3000;    // TESTING. Phase-based later.
+const RETRY_MS   = 4000;
+const TIMEOUT_MS = 7000;
+const PROBE_MS   = 4000;   // screen 3: two tries inside ~8s beats one slow try
+const CLOCK_RTT  = 3000;   // congested wifi can reach this; a suspended page returns in tens of seconds
+const WRITE_MS   = 4000;   // host writes fail fast; a retry beats one long wait
+const SYNC_DELAY = 400;
+const STALE_MS   = 10000;
+const OFF_MS     = 30000;
+const SW_CACHE   = "speaktiger-shell";   // prefix; the worker versions it
+const QUIET_MS   = 30000;
+const VERSION    = "0.39-beta";   // shown in diagnostics
+const MAX_SCREEN = SCREENS.length;
+
+/* ==================================================================
+   STATE — unchanged from v11
+================================================================== */
+const params  = new URLSearchParams(location.search);
+const room    = params.get("r") || "lisbon";
+const key     = params.get("k");
+const isHost  = !!key;
+const QUIET   = params.get("quiet") === "1";
+const API     = params.get("api") === "old" ? API_OLD : API_MAIN;
+const PREVIEW = params.get("preview") === "1";   // REVIEW TOOL — remove before ship
+
+const startedAt = Date.now();
+let screenNo = null, lastUpdatedAt = -1, lastOkAt = 0, manual = null;
+let haveData = false, showSyncing = true, syncTimer = null;
+let current = null, generation = 0, consecFails = 0;   // current = { ctrl, kind } or null
+let pulls = 0, fails = 0, timeouts = 0;
+let lastErr = "", swState = "none", proto = "?", pushErr = "";
+/* Bumped by every navigation, online or offline. The probe carries the value it
+   started with: checking `current.kind` alone missed a write that both started
+   AND finished inside the retry pause, leaving a stale test free to force the
+   red banner seconds after a successful tap. */
+let navSeq = 0;
+let clockOffset = 0, clockSeen = false;   // serverNow - localNow, smoothed across responses
+let endsAt = null, endsScreen = null;   // a deadline belongs to ONE screen
+let localEnds = null, localScreen = null;   // host-only stopwatch, LOCAL clock
+const LOGO_MARK = "speaktiger-footer-sqr.png";
+const LOGO_FULL = "speaktiger-logo-white.png";
+const KEEP_MS   = 6 * 60 * 60 * 1000;   // a remembered screen goes stale
+const serverTime = () => Date.now() + clockOffset;
+let wakeLock = null, nextTryAt = 0, quietSince = 0;
+let renderedScreen = null, testState = "idle", forceOffline = false;
+let wasDown = false, okUntil = 0;   // drives the "Status: online" confirmation
+let detached = false, detachScreen = null;   // guest following by hand on purpose
+let sendingSince = 0, sendSeq = 0;           // host write in flight, and who owns the indicator
+let wakePending = false;                     // one wake-lock request at a time
+
+const $ = (id) => document.getElementById(id);
+if (isHost) document.body.classList.add("host");
+if (PREVIEW) document.body.classList.add("preview");
+/* Diagnostics and the screen-lock readout are off for everyone, host included.
+   ?diag=1 brings them back, and so does ?debug=1. */
+if (params.get("debug") === "1" || params.get("diag") === "1") document.body.classList.add("debug");
+
+/* The local position, kept apart from st_screen — which stays a record of what
+   the SERVER last confirmed and nothing else. Offline navigation never reached
+   storage before, so a reload dropped the host back to the last screen the room
+   had actually seen, and with it the reassert that would have caught the room
+   up on reconnect. A reload is not always deliberate: iOS evicts backgrounded
+   tabs and reloads them on return.
+
+   Declared HERE, above the restore block that reads it. These are const, so
+   from further down the file they sit in the temporal dead zone and the read
+   throws — silently, because the restore is wrapped in an empty catch. */
+const MANUAL_KEY = () => "st_manual_" + room;
+const MANUAL_TTL = 30 * 60 * 1000;   // refreshed on every manual move, so a
+                                     // gap this long means no event is running
+
+function saveManual() {
+  try {
+    localStorage.setItem(MANUAL_KEY(), JSON.stringify({
+      m: manual, d: detached, ds: detachScreen, t: Date.now()
+    }));
+  } catch (e) {}
+}
+function clearManual() {
+  try { localStorage.removeItem(MANUAL_KEY()); } catch (e) {}
+}
+
+/* A remembered screen is only useful for minutes, not days — after six hours
+   it belongs to a finished event and would open on the wrong screen. */
+try {
+  const raw = JSON.parse(localStorage.getItem("st_screen_" + room));
+  if (raw && Number.isInteger(raw.s) && raw.s >= 1 && raw.s <= MAX_SCREEN &&
+      Number.isFinite(raw.t) && Date.now() - raw.t < KEEP_MS) {
+    screenNo = raw.s;
+    if (Number.isFinite(raw.o)) { clockOffset = raw.o; clockSeen = true; }
+    /* only if it still belongs to the screen we are restoring */
+    if (Number.isFinite(raw.e) && raw.es === raw.s) { endsAt = raw.e; endsScreen = raw.es; }
+  }
+} catch (e) {}
+
+/* The local position, restored only here. Nothing expires a manual session that
+   is already running — the age check exists to stop a position from a finished
+   event resurrecting, which for a host would be a broadcast rather than a
+   restore. */
+try {
+  const mr = JSON.parse(localStorage.getItem(MANUAL_KEY()));
+  if (mr && Number.isFinite(mr.t) && Date.now() - mr.t < MANUAL_TTL) {
+    const m = validScreen(mr.m);
+    if (m !== null) manual = m;
+    if (mr.d === true) {
+      const ds = validScreen(mr.ds);
+      if (ds !== null) { detached = true; detachScreen = ds; }
+    }
+  } else if (mr) {
+    clearManual();
+  }
+} catch (e) {}
+
+if (isHost) {
+  try {
+    const raw = JSON.parse(localStorage.getItem("st_local_" + room));
+    if (raw && Number.isFinite(raw.e) && Number.isInteger(raw.s) &&
+        Number.isFinite(raw.t) && Date.now() - raw.t < KEEP_MS) {
+      localEnds = raw.e; localScreen = raw.s;
+    }
+  } catch (e) {}
+}
+
+if (PREVIEW) {
+  const s = parseInt(params.get("s") || "1", 10);
+  screenNo = Number.isInteger(s) && s >= 1 && s <= MAX_SCREEN ? s : 1;
+  haveData = true; showSyncing = false; lastOkAt = Date.now();
+}
+
+/* ==================================================================
+   STAGE
+================================================================== */
+const esc = (s) => String(s).replace(/[&<>]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;" }[c]));
+
+/* The placeholder sits underneath and the artwork covers it. Drop a correctly
+   named file next to index.html and it appears; until then the placeholder
+   shows and nothing needs editing. A missing file removes its own <img>. */
+const imgSrc = (o) => "images/img-" + o.id + ".webp";
+const imgBox = (o) => !o ? "" :
+  `<div class="imgwrap">` +
+    `<div class="ph"></div>` +
+    `<img src="${esc(imgSrc(o))}" alt="" onerror="this.remove()">` +
+  `</div>`;
+
+const PALETTE = ["sky", "cyan", "slate"];
+const CHEV = `<li class="chev" aria-hidden="true"><svg viewBox="0 0 26 15" fill="none">` +
+  `<path d="M4 4 L13 12 L22 4" stroke="var(--green)" stroke-width="5" ` +
+  `stroke-linecap="round" stroke-linejoin="round"/></svg></li>`;
+
+const tagList = (a, colors, mode) => {
+  if (!a || !a.length) return "";
+  const cls = mode === "stack" ? " stack" : mode === "flow" ? " stack flow" : "";
+  const items = a.map((t, i) => {
+    const c = (colors && colors[i]) || PALETTE[i % PALETTE.length];
+    /* flex-grow tracks text length so cloud rows justify proportionally */
+    return `<li class="t-${c}" style="flex-grow:${Math.max(2, t.length)}">${esc(t)}</li>`;
+  });
+  return `<ul class="tags${cls}">${mode === "flow" ? items.join(CHEV) : items.join("")}</ul>`;
+};
+
+const bandBlock = (bands) => !bands || !bands.length ? "" :
+  `<div class="qband">${bands.map(b =>
+    `<div class="qsec"><div class="qhead">${esc(b.head)}</div>` +
+    `<ul>${b.items.map(q => `<li>${esc(q)}</li>`).join("")}</ul></div>`).join("")}</div>`;
+
+const tipBlock = (t) => !t ? "" :
+  `<div class="tip"><span class="ico" aria-hidden="true">i</span><p>${esc(t)}</p></div>`;
+
+const SPIN = `<div class="spin" aria-hidden="true"><svg viewBox="0 0 100 100" fill="none">
+<g stroke="currentColor" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+<path d="M24 62 L24 44 A20 20 0 0 1 44 24 L58 24"/>
+<path d="M50 16 L58 24 L50 32"/>
+<path d="M76 38 L76 56 A20 20 0 0 1 56 76 L42 76"/>
+<path d="M50 84 L42 76 L50 68"/>
+</g>
+</svg></div>`;
+
+const ROTATE_IMG = { id:"rotate", label:"table card — number + arrow" };
+
+function head(eyebrow, title, sub) {
+  const lines = sub == null ? [] : (Array.isArray(sub) ? sub : [sub]);
+  return `<div class="scr-head">${eyebrow ? `<div class="eyebrow">${esc(eyebrow)}</div>` : ""}` +
+    (title ? `<h1><span>${esc(title)}</span></h1>` : "") +
+    lines.map(l => `<p class="sub">${esc(l)}</p>`).join("") + `</div>`;
+}
+
+/* screens carrying a tip use a centred single column so the image never
+   leans into an empty grid track; everything else keeps the deck's split */
+/* Every screen that has both an image and body content splits on a wide
+   viewport (image left, content right) and stacks on a phone. Screens with
+   no body — the cover — stay centred so the image never leans into an
+   empty grid track. */
+function shell(s, eyebrow, body, extra) {
+  const cls = (body ? "scr split" : "scr mid") + (extra ? " " + extra : "");
+  return `<div class="${cls}">${head(eyebrow, s.title, s.sub)}${imgBox(s.img)}` +
+    (body ? `<div class="body">${body}</div>` : "") + `</div>`;
+}
+
+function stageHTML(s) {
+  if (!s) return "";
+  switch (s.type) {
+    case "cover":
+      /* screen 1 carries the wordmark inside its artwork; screen 4 is the
+         wordmark on its own */
+      return `<div class="scr"><div class="cover">` +
+        (s.brandOnly
+          ? `<div class="lozenge">SPEED<br>FRIENDING</div>`
+          : imgBox(s.img) + (s.sub ? `<p class="sub covertag">${esc(s.sub)}</p>` : "")) +
+        `</div></div>`;
+
+    case "instruction":
+    case "break":
+      return shell(s, null, tipBlock(s.tip));
+
+    case "info":
+      return shell(s, null, tagList(s.tags, s.tagColors, s.flow ? "flow" : "stack") + tipBlock(s.tip));
+
+    case "test": {
+      if (testState === "ok")
+        return `<div class="scr"><div class="test">${head(null, s.okTitle, s.okSub)}` +
+          `<button id="testbtn" class="ok">\u2713 ${esc(s.okBtn)}</button></div></div>`;
+      if (testState === "bad")
+        return `<div class="scr"><div class="test">${head(null, s.badTitle, s.badSub)}` +
+          `<button id="testbtn" class="bad">\u2715 ${esc(s.badBtn)}</button></div></div>`;
+      const busy = testState === "checking";
+      return `<div class="scr"><div class="test">${head(null, s.title, s.sub)}` +
+        `<button id="testbtn" class="primary">${esc(busy ? "checking\u2026" : s.btn)}</button></div></div>`;
+    }
+
+    case "round":
+      return shell(s, "🏆 Round " + s.round,
+        tagList(s.tags) + bandBlock([{ head: "Sample questions:", items: s.qs }]));
+
+    case "group":
+      return shell(s, "🏆 Round " + s.round, tagList(s.tags) + bandBlock(s.bands));
+
+    case "rotate":
+      return shell({ ...s, img: s.img || ROTATE_IMG }, null,
+        `<div class="chips">` +
+          /* the arrows mean rotate and purple means you rotate — one idea,
+             so they arrive as one object rather than two */
+          `<div class="chip move"><span><b>Purple</b> move to the next table</span>${SPIN}</div>` +
+          `<div class="chip stay"><b>Yellow</b> stay where you are</div>` +
+        `</div>`, "rot");
+
+    case "closing":
+      return shell(s, null, tipBlock(s.tip) +
+        `<div class="follow">Follow us: <a href="${esc(s.handleUrl)}" target="_blank" rel="noopener">${esc(s.handle)}</a></div>`);
+  }
+  return "";
+}
+
+/* Host helper. Every section is optional; nothing renders an empty block.
+   Order is fixed: meta, talking points, up next, script, do, special cases. */
+const htRows = (items, cls) => items.map((t, i) =>
+  `<div class="ht-row"><div class="ht-num">${i + 1}</div><div class="${cls}">${esc(t)}</div></div>`).join("");
+
+const htScript = (text, cls) =>
+  `<div class="ht-script ${cls || ""}">${esc(text)}</div>`;
+
+function htSpecial(x) {
+  const late = /during the break/i.test(x.title);
+  let body = "";
+  if (x.first && x.first.length)
+    body += `<div class="ht-first">${x.first.map(esc).join("<br>")}</div>`;
+  if (x.actions && x.actions.length)
+    body += `<div class="ht-branch"><div class="ht-steps">${htRows(x.actions, "ht-steptxt")}</div></div>`;
+  (x.branches || []).forEach((b) => {
+    body += `<div class="ht-branch"><div class="ht-branch-top"><div class="ht-branch-name">${esc(b.title)}</div>` +
+            (b.badge ? `<div class="ht-badge">${esc(b.badge)}</div>` : "") + `</div>` +
+            `<div class="ht-steps">${htRows(b.actions, "ht-steptxt")}</div></div>`;
+  });
+  if (x.roomTalk && x.roomTalk.length)
+    /* square bullets, not numbers: these sit beside numbered action plans and
+       must not read as another set of steps */
+    body += `<div class="ht-room"><div class="ht-room-label">Tell the room — talking points</div>` +
+            x.roomTalk.map((t) => `<div class="ht-room-point"><i></i><div>${esc(t)}</div></div>`).join("") + `</div>`;
+  if (x.roomScript)
+    body += `<div class="ht-room-script"><div class="ht-room-label">Exact room script</div>${htScript(x.roomScript)}</div>`;
+
+  return `<details class="ht-special"><summary>` +
+    `<div class="ht-sp-head"><div class="ht-alert">!</div><div>` +
+    `<div class="ht-sp-title">${esc(x.title)}</div>` +
+    `<div class="ht-sp-sub">Open only if this ${late ? "actually happened" : "applies"}.</div>` +
+    `</div></div><div class="ht-chev">⌄</div></summary>` +
+    `<div class="ht-sp-body">${body}</div></details>`;
+}
+
+function notesHTML(h) {
+  if (!h) return "";
+  let out = "";
+
+  if (h.talk && h.talk.length)
+    out += `<section class="ht-sec ht-talk"><div class="ht-title"><span>Talking points</span><i></i></div>` +
+           htRows(h.talk, "ht-talktxt") + `</section>`;
+
+  if (h.upNext)
+    out += `<div class="ht-upnext"><span class="ht-upnext-lbl">Up next</span>` +
+           `<span class="ht-upnext-txt">${esc(h.upNext)}</span></div>`;
+
+  if (h.script)
+    out += `<details class="ht-fold"><summary><div><div class="ht-fold-h">Exact room script</div>` +
+           `<div class="ht-fold-sub">Open if you want the full wording</div></div>` +
+           `<div class="ht-chev">⌄</div></summary>${htScript(h.script, "ht-fold-copy")}</details>`;
+
+  if (h.do && h.do.length)
+    out += `<section class="ht-sec ht-do"><div class="ht-title"><span>Do</span><i></i></div>` +
+           h.do.map((t) => `<div class="ht-row"><div class="ht-check">✓</div><div class="ht-dotxt">${esc(t)}</div></div>`).join("") +
+           `</section>`;
+
+  (h.special || []).forEach((x) => { out += htSpecial(x); });
+  return out;
+}
+
+/* The only thing JS still decides about the image: square is the ceiling,
+   because the master is square and a taller box would crop the sides instead
+   of the top and bottom. Everything else is flex and grid geometry.
+   imgTier() is gone — real available space is a better rule than a guess at
+   content weight, and it degrades continuously instead of in three steps. */
+function sizeImage() {
+  const wrap = document.querySelector("#stage .imgwrap");
+  if (!wrap) return;
+  /* Restore first, decide after — otherwise a screen hidden on a short
+     viewport would stay hidden once the window grew again. */
+  wrap.style.display = "";
+  const scr = wrap.closest(".scr");
+  if (scr) scr.classList.remove("noimg");
+  wrap.style.setProperty("--imgcap", (wrap.clientWidth || 0) + "px");
+}
+
+/* Judged AFTER layout, on the height the image actually ended up with — the
+   old version guessed beforehand, using text that had not been fitted yet, and
+   concluded there was no room on almost every screen. */
+function hideSliver() {
+  const wrap = document.querySelector("#stage .imgwrap");
+  if (!wrap || wrap.style.display === "none") return false;
+  /* 0 counted as "fine" before, so a collapsed wrapper stayed in the flex flow
+     and kept a gap on both sides of an image nobody could see. */
+  if (wrap.offsetHeight < 100) {
+    wrap.style.display = "none";   // a hairline reads as broken; absence reads as a text screen
+    const scr = wrap.closest(".scr");
+    if (scr) scr.classList.add("noimg");
+    return true;
+  }
+  return false;
+}
+
+/* One line, always. The clamp above asks for more than the longest titles can
+   take, so this walks each one down until it fits — short titles keep the
+   larger size, long ones settle where they always were. */
+function fitTitle() {
+  const h = document.querySelector("#stage .scr-head h1");
+  const t = h && h.firstElementChild;      // the inline span holding the text
+  if (!h || !t) return;
+  h.style.fontSize = "";
+  /* Measured on the inline span, never on the h1. The title is centred, so
+     overflowing text spills off BOTH edges — and scrollWidth only counts the
+     end edge, leaving it stuck equal to clientWidth however wide the text got.
+     That comparison was meaningless: with a +1 tolerance it never fired, with
+     a -3 tolerance it always did, and both looked like the fitter working. */
+  const room = h.clientWidth - 4;
+  if (room <= 0) return;                   // nothing measurable yet: leave it alone
+  const width = () => t.getBoundingClientRect().width;
+  if (width() <= room) return;
+  const base = parseFloat(getComputedStyle(h).fontSize) || 24;
+  /* Floor at 0.60. The longest title needs about 0.63 of the ideal on a 320px
+     phone, where the clamp minimum is already larger than that width can take.
+     Low enough that the overflow clip never has to act on real content, far
+     enough from 0.50 that a bad measurement cannot halve a title. */
+  let lo = 0.60, hi = 1;
+  for (let i = 0; i < 9; i++) {
+    const mid = (lo + hi) / 2;
+    h.style.fontSize = (base * mid).toFixed(2) + "px";
+    if (width() > room) hi = mid; else lo = mid;
+  }
+  h.style.fontSize = (base * lo).toFixed(2) + "px";
+}
+
+/* Shrink the body block until it fits its box. The body's type and spacing are
+   all em-relative, so one font-size governs the whole block. Binary search, so
+   at most 10 reflows, and only on a screen change or a resize. */
+function fitBody() {
+  const scr = document.querySelector("#stage .scr");
+  const b = scr && scr.querySelector(".body");
+  if (!b) return;
+  b.style.fontSize = "";
+  const over = () => b.scrollHeight > b.clientHeight + 1 || scr.scrollHeight > scr.clientHeight + 1;
+  if (!over()) return;
+  const base = parseFloat(getComputedStyle(b).fontSize) || 16;
+  let lo = 0.5, hi = 1;
+  for (let i = 0; i < 10; i++) {
+    const mid = (lo + hi) / 2;
+    b.style.fontSize = (base * mid).toFixed(2) + "px";
+    if (over()) hi = mid; else lo = mid;
+  }
+  b.style.fontSize = (base * lo).toFixed(2) + "px";
+}
+const scheduleFit = () => requestAnimationFrame(() => {
+  fitTitle();      // before the rest: the title's height changes what is left
+  sizeImage();
+  fitBody();
+  if (hideSliver()) fitBody();   // the freed space may let the text grow back
+});
+
+/* repaint the current screen WITHOUT resetting its local state */
+function repaintStage() {
+  if (renderedScreen === null) return;
+  const s = SCREENS[renderedScreen - 1];
+  $("stage").innerHTML = stageHTML(s);
+  bindStage();
+  scheduleFit();
+}
+
+function bindStage() {
+  const tb = $("testbtn");
+  if (!tb || testState === "ok" || testState === "bad") return;
+  tb.onclick = async () => {
+    if (testState === "checking") return;
+    testState = "checking";
+    acquireWakeLock(false);        // must ride the real user gesture
+    repaintStage();
+    const ok = await probe();      // its own request, judged on its own result
+    if (ok === "cancelled") {      // the host moved on; the test never ran
+      testState = "idle";
+      repaintStage(); render();
+      return;
+    }
+    testState = ok ? "ok" : "bad";
+    if (!ok) forceOffline = true;  // manual now; the loop keeps retrying silently
+    repaintStage();
+    render();
+  };
+}
+
+function renderStage(shown) {
+  if (shown === renderedScreen) return;
+  renderedScreen = shown;
+
+  /* full lockup on the cover, circle everywhere else — the Soda pattern */
+  const logo = $("logo"), wantFull = shown === 1;
+  const wantSrc = wantFull ? LOGO_FULL : LOGO_MARK;
+  if (!logo.src.endsWith(wantSrc)) logo.src = wantSrc;
+  logo.classList.toggle("mark", !wantFull);
+
+  /* the bar would otherwise animate backwards for a second on every advance */
+  const t = $("timer");
+  t.classList.add("jump");
+  renderTimer(shown);
+  requestAnimationFrame(() => t.classList.remove("jump"));
+  testState = "idle";
+  const s = SCREENS[shown - 1];
+  $("stage").innerHTML = stageHTML(s);
+  $("notes").innerHTML = notesHTML(HOST_TIPS[shown - 1]);
+  if (isHost) lockSheet();          // collapsed content decides the height, once per screen
+  $("notes").scrollTop = 0;
+  if (isHost) setTips(false, false);
+  const hs = $("helpsheet"); if (hs) hs.hidden = true;
+  bindStage();
+  scheduleFit();
+}
+
+/* ==================================================================
+   RENDER — chrome only
+================================================================== */
+const DOTS = '<span class="dot">\u00b7</span><span class="dot">\u00b7</span><span class="dot">\u00b7</span>';
+function setBanner(text, kind, dots) {
+  const b = $("banner");
+  const was = b.className;
+  b.innerHTML = text ? (esc(text) + (dots ? " " + DOTS : "")) : "";
+  b.className = text ? ("on " + (kind || "")) : "";
+  /* The banner is a real strip: showing or hiding it changes the stage height,
+     and without a re-fit an image that should now be hidden stays behind as a
+     dashed sliver until something else happens to trigger one. */
+  if ((was === "") !== (b.className === "")) scheduleFit();
+}
+
+function clock(ms) {
+  /* floor, not round: the boundary belongs on the whole second, where a
+     stopwatch puts it, and the value can then only fall */
+  const t = Math.max(0, Math.floor(ms / 1000));
+  return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0");
+}
+
+/* Every phone counts toward the same absolute instant on the server's clock,
+   so a screen that slept for four minutes wakes up in the right place instead
+   of resuming a stale count. */
+function renderTimer(shown) {
+  const wrap = $("timer"), fill = $("timerfill");
+  const s = shown === null ? null : SCREENS[shown - 1];
+  const total = s && s.secs ? s.secs * 1000 : 0;
+  /* endsScreen is what stops a manually-entered round inheriting the previous
+     round's deadline — and it hides the host's bar while offline for free,
+     because nothing has stamped a deadline for the screen they are on. */
+  if (!total || endsAt === null || endsScreen !== shown) {
+    wrap.classList.remove("on");
+    return 0;
+  }
+  wrap.classList.add("on");
+  const left = Math.max(0, endsAt - serverTime());
+  fill.style.width = Math.min(100, Math.max(0, (1 - left / total) * 100)).toFixed(2) + "%";
+  return left;
+}
+
+/* One definition of "offline", so the two places that gate the host stopwatch
+   cannot drift. Derived from globals, not from render()'s local `offline`. */
+function isOffline() {
+  return !PREVIEW && (forceOffline || Date.now() - (lastOkAt || startedAt) > OFF_MS);
+}
+
+/* The host's local stopwatch is available whenever this device is running the
+   room on an unconfirmed position — not only once the 30s threshold has passed.
+   lastOkAt starts at 0 and falls back to startedAt, so a reload always looks
+   like fresh contact for 30 seconds; after an OFFLINE reload the host could
+   already advance screens but a timed screen offered no clock at all. A
+   restored `manual` is proof the position is local and unsynced.
+
+   The cost, accepted: if the network is already back at reload, `manual` stays
+   set until the first poll, so a timed screen can briefly show the idle
+   stopwatch. Contact reasserts and clearLocal() retires it. */
+function hostLocal() {
+  return isHost && (manual !== null || isOffline());
+}
+
+function render() {
+  const shown = manual !== null ? manual : screenNo;
+
+  const age     = Date.now() - (lastOkAt || startedAt);
+  const offline = isOffline();
+  const stale   = !PREVIEW && !offline && age > STALE_MS;
+  const syncing = showSyncing && !haveData && !offline && !stale && shown === null;
+  /* separate from `syncing`, which also drives .syncing #stage { display:none } —
+     loosening that one would hide the cached screen we are deliberately showing */
+  const unsynced = !PREVIEW && !haveData && !offline && !stale;
+
+  document.body.classList.toggle("syncing", syncing);
+  document.body.classList.toggle("stale",   stale);
+  document.body.classList.toggle("offline", offline);
+
+  if (shown !== null) renderStage(shown);
+  $("count").textContent = shown === null ? "" : shown + " / " + MAX_SCREEN;
+
+  const left = renderTimer(shown);
+  /* room label for host and debug only; digits are the host's alone */
+  $("roomlbl").textContent = room;   // guests too: it catches the wrong-city link
+
+  const scr = shown === null ? null : SCREENS[shown - 1];
+  let txt = "", cls = "";
+  if (isHost && left > 0) {
+    txt = clock(left);                                   // the room is on this clock
+  } else if (hostLocal() && scr && scr.secs) {
+    if (localScreen === shown && localEnds !== null) {
+      const l = localEnds - Date.now();
+      txt = l >= 0 ? clock(l) : "+" + clock(-l);          // running over is the useful number
+      cls = l >= 0 ? "local" : "local over";
+    } else {
+      txt = "▶ " + clock(scr.secs * 1000);                // tap to start
+      cls = "local idle";
+    }
+  }
+  $("hostclock").textContent = txt;
+  $("hostclock").className = cls;
+
+  /* one banner treatment for every system state */
+  const sending = sendingSince > 0 && Date.now() - sendingSince > 400;
+  const down = !PREVIEW && (!!pushErr || offline || stale || unsynced || detached);
+  if (down) { wasDown = true; okUntil = 0; }
+  else if (wasDown) { wasDown = false; okUntil = Date.now() + 2600; }
+
+  document.body.classList.toggle("detached", detached);
+
+  if (PREVIEW)                setBanner("preview — not synced", "");
+  else if (pushErr)           setBanner(pushErr, "bad");
+  else if (sending)           setBanner("sending", "", true);
+  /* For a guest, offline means "follow along by hand" — harmless. For the host
+     it means their taps are not reaching the room, which is an emergency, and
+     their screen still advances locally. Different words, different colour. */
+  else if (offline && isHost) setBanner("offline — the room is not moving", "bad", true);
+  else if (offline)           setBanner("offline mode", "grey");       // settled, no dots
+  else if (stale)             setBanner("reconnecting", "", true);
+  else if (detached)          setBanner("manual mode", "");
+  else if (unsynced)          setBanner("connecting", "", true);
+  else if (Date.now() < okUntil) setBanner("Status: online", "good");
+  else                        setBanner("", "");
+
+  const secs = lastOkAt ? Math.round((Date.now() - lastOkAt) / 1000) + "s ago" : "never";
+  $("diag").innerHTML =
+    `v${VERSION} · last ok: ${secs} · polls ${pulls} · fails ${fails} · timeouts ${timeouts}` +
+    `<br>onLine: ${navigator.onLine} · sw: ${swState} · consec ${consecFails}` +
+    ` · ${current ? current.kind : "idle"} · proto ${proto}` +
+    ` · clock ${clockOffset >= 0 ? "+" : ""}${clockOffset}ms` +
+    (QUIET ? ` · QUIET${quietPause() ? " " + quietLeft() + "s" : ""}` : "") +
+    (lastErr ? `<br><span style="color:var(--bad)">${esc(lastErr)}</span>` : "");
+}
+
+/* ==================================================================
+   NETWORK — unchanged from v11
+================================================================== */
+function readProtocol(url) {
+  try {
+    const es = performance.getEntriesByType("resource");
+    for (let i = es.length - 1; i >= 0; i--) {
+      if (es[i].name.startsWith(url.split("?")[0]) && es[i].nextHopProtocol) { proto = es[i].nextHopProtocol; return; }
+    }
+  } catch (e) {}
+}
+
+/* A read is disposable — it repeats in POLL_MS. A write (host tap) and the
+   connection probe are not, so they abort whatever is running and take the
+   slot. The slot is only released by its own owner, which is what stops an
+   aborted request from clearing the flag for the newer one that replaced it. */
+function abortCurrent() {
+  if (current) {
+    current.superseded = true;     // aborted on purpose — not a network failure
+    try { current.ctrl.abort(); } catch (e) {}
+    current = null;
+  }
+}
+
+async function request(kind, url, opts, deadline) {
+  const me = { ctrl: new AbortController(), kind, superseded: false };
+  current = me;
+  const t = setTimeout(() => { try { me.ctrl.abort(); } catch (e) {} }, deadline || TIMEOUT_MS);
+  try {
+    const t0 = Date.now();
+    const res = await fetch(url, { ...opts, signal: me.ctrl.signal, cache: "no-store" });
+    const t1 = Date.now();
+    if (!res.ok) {
+      let msg = "HTTP " + res.status;
+      try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) {}
+      throw new Error(msg);
+    }
+    const data = await res.json();
+    /* iOS freezes a page on lock. A reply that landed during the freeze is only
+       noticed on unlock, so t1 lands minutes after t0 and the midpoint reads the
+       sleep as latency. Discarding slow samples kills that and also drops the
+       most asymmetric — and therefore least accurate — round trips. */
+    if (typeof data.now === "number" && Number.isFinite(data.now) && (t1 - t0) <= CLOCK_RTT) {
+      /* midpoint of the round trip, not the moment we finished parsing — the
+         difference is half the latency, which on venue wifi is real */
+      /* Blended, not replaced. One slow round trip on congested venue wifi
+         would otherwise shift the offset enough to hold a second and then
+         double-step the host's digits. */
+      const sample = data.now - (t0 + t1) / 2;
+      clockOffset = clockSeen ? Math.round(clockOffset * 0.8 + sample * 0.2) : Math.round(sample);
+      clockSeen = true;
+    }
+    readProtocol(url);
+    return data;
+  } catch (e) {
+    if (me.superseded) { const x = new Error("superseded"); x.name = "Superseded"; throw x; }
+    throw e;
+  } finally {
+    clearTimeout(t);
+    if (current === me) current = null;
+  }
+}
+
+/* the server is trusted no further than localStorage is */
+function validScreen(v) {
+  const n = typeof v === "number" ? v : parseInt(v, 10);
+  return Number.isInteger(n) && n >= 1 && n <= MAX_SCREEN ? n : null;
+}
+/* Screen and deadline move as one. They used to be split — the deadline was
+   unpacked in request(), before any caller had decided whether the response was
+   stale — so a rejected out-of-order reply could still hand its deadline to the
+   current screen. Binding endsScreen makes the pair self-checking. */
+function applyState(data) {
+  const n = validScreen(data.screen);
+  if (n === null) {
+    lastErr = "server sent screen " + data.screen + " (out of 1-" + MAX_SCREEN + ")";
+    return false;
+  }
+  screenNo = n;
+  /* The host's confirmation point. The reassert branch in pull() returns
+     before reaching applyState, so a write still in flight leaves the stored
+     position untouched — and a reload during that window restores and
+     reasserts it again. It clears only once a response has actually landed
+     with no local override outstanding. */
+  if (manual === null && !detached) clearManual();
+
+  const e = data.endsAt;
+  if (e === null || e === undefined || Number.isFinite(e)) {
+    endsAt = Number.isFinite(e) ? e : null;
+    endsScreen = endsAt === null ? null : n;
+  }
+  /* The deadline is cached with the screen it belongs to. It used to live only
+     in memory, so a reload while offline lost the running round entirely and
+     the host was shown the idle stopwatch instead. */
+  try {
+    localStorage.setItem("st_screen_" + room, JSON.stringify({
+      s: n, t: Date.now(), e: endsAt, es: endsScreen, o: clockOffset
+    }));
+  } catch (err) {}
+  return true;
+}
+
+/* Host emergency stopwatch. A fixed local deadline, not a countdown, so a
+   reconnect retry cannot quietly extend the round. Survives a reload because
+   the offline host's phone is exactly the one that might get refreshed. */
+function startLocal(screen, secs) {
+  localScreen = screen;
+  localEnds = Date.now() + secs * 1000;
+  try {
+    localStorage.setItem("st_local_" + room,
+      JSON.stringify({ e: localEnds, s: localScreen, t: Date.now() }));
+  } catch (e) {}
+}
+function clearLocal() {
+  localEnds = null; localScreen = null;
+  try { localStorage.removeItem("st_local_" + room); } catch (e) {}
+}
+/* Recomputed at every attempt, never cached: a 4s timeout plus a retry must
+   send LESS time than the first try did, not the same. */
+function secsFor(target) {
+  const full = (SCREENS[target - 1] || {}).secs || null;
+  if (full === null) return null;
+  if (localScreen === target && localEnds !== null) {
+    const left = Math.round((localEnds - Date.now()) / 1000);
+    return Math.max(1, Math.min(full, left));   // 1s floor: a full bar is honest, an empty one is not
+  }
+  return full;
+}
+
+const stateURL = () => `${API}/state?r=${encodeURIComponent(room)}&_=${Date.now()}`;
+
+async function pull() {
+  /* sendingSince covers the WHOLE push, including the 200ms gap between
+     attempts, where `current` is null. A poll landing there reached
+     clearLocal(), destroyed the deadline, and the retry resent the full
+     duration — the extension bug reopened through a different door. */
+  if (PREVIEW || current || sendingSince) return;   // never disturb a write or another read
+  const myGen = ++generation;
+
+  clearTimeout(syncTimer);
+  if (!haveData) syncTimer = setTimeout(() => { showSyncing = true; render(); }, SYNC_DELAY);
+
+  try {
+    const data = await request("read", stateURL());
+    if (myGen !== generation) return;
+
+    /* The response arrived, so the network is healthy. That is true whether or
+       not we go on to use the body. Keeping the two apart is what stops an
+       out-of-order payload from being read as a dead connection. */
+    lastOkAt = Date.now(); haveData = true; showSyncing = false;
+    consecFails = 0; pushErr = ""; forceOffline = false;
+    if (testState === "bad") { testState = "ok"; repaintStage(); }
+
+    if (data.updatedAt !== undefined && data.updatedAt < lastUpdatedAt) return;
+    if (data.updatedAt !== undefined) lastUpdatedAt = data.updatedAt;
+    lastErr = "";
+
+    /* The host ran the room by hand while offline, so their position is the
+       truth the server has to catch up to. Adopting the server's older screen
+       here would send the whole room backwards on the next tap. */
+    if (isHost && manual !== null) {
+      const want = manual;
+      manual = null;
+      screenNo = want;
+      push(want);
+      return;
+    }
+
+    /* A guest who detached on purpose stays put until the host actually moves
+       the room. That change is the rejoin signal — nobody has to be told. */
+    if (detached) {
+      const v = validScreen(data.screen);
+      if (v === null || v === detachScreen) return;
+      detached = false; detachScreen = null;   // the host moved: rejoin
+      clearManual();
+    }
+
+    applyState(data);
+    manual = null;
+    /* The handover point for an ordinary guest. applyState runs while manual is
+       still set, so leaving this to a later poll would keep a dead local
+       position on disk for another cycle. */
+    clearManual();
+    /* Below the reassert branch on purpose: that path returns above, so the
+       reconnect write still sees the stopwatch and sends what is LEFT. Down
+       here there is no pending reassert, so contact means the emergency is
+       over. Covers the case where a stopwatch was started without ever
+       tapping Next, which no write would otherwise clear. */
+    if (localEnds !== null) clearLocal();
+  } catch (e) {
+    if (e && e.name === "Superseded") return;   // a host tap took the line
+    fails++; consecFails++;
+    if (e && e.name === "AbortError") timeouts++;
+    lastErr = (e && (e.name + ": " + e.message)) || String(e);
+    /* nothing cached and the first try failed — show screen 1 and hand over
+       the buttons rather than leaving the guest on a blank page */
+    if (screenNo === null) { screenNo = 1; forceOffline = true; }
+  } finally {
+    clearTimeout(syncTimer);
+    pulls++; render();
+  }
+}
+
+/* Screen 3. A real request of its own, judged on its own result — never on
+   how long ago something else happened to succeed. */
+async function probeOnce(gen) {
+  /* A host tap IS the room moving; a connection test is diagnostics. Aborting a
+     write meant push() saw "Superseded", read it as "a newer tap owns this" and
+     returned silently — so Next was dropped with no retry and no banner, on the
+     one screen whose whole purpose is to be left. */
+  if (navSeq !== gen) return "cancelled";
+  if (current && current.kind === "write") return "cancelled";
+  abortCurrent();
+  try {
+    const data = await request("test", stateURL(), undefined, PROBE_MS);
+    /* a navigation landed while this was in flight: its answer describes a
+       screen the host has already left, so nothing here may be applied */
+    if (navSeq !== gen) return "cancelled";
+    lastErr = "";
+    if (data.updatedAt !== undefined && data.updatedAt >= lastUpdatedAt) {
+      lastUpdatedAt = data.updatedAt;
+      applyState(data);
+    }
+    lastOkAt = Date.now(); haveData = true; showSyncing = false;
+    consecFails = 0; pushErr = ""; forceOffline = false;
+    return true;
+  } catch (e) {
+    if (e && e.name === "Superseded") return "cancelled";   // a write took over
+    if (navSeq !== gen) return "cancelled";                 // failed after a nav: not a verdict
+    fails++; consecFails++;
+    if (e && e.name === "AbortError") timeouts++;
+    lastErr = (e && (e.name + ": " + e.message)) || String(e);
+    return false;
+  } finally { pulls++; render(); }
+}
+
+/* Fifty phones hit one access point at once, so the first attempt can lose on
+   contention alone. The random wait keeps the retries from colliding exactly
+   the way the first round did. */
+async function probe() {
+  const gen = navSeq;
+  const first = await probeOnce(gen);
+  if (first === true) return true;
+  if (first === "cancelled") return "cancelled";        // stop: no retry, no red
+  await new Promise(r => setTimeout(r, 300 + Math.random() * 500));
+  /* the pause is exactly when a host tap can arrive — and a quick one can be
+     over before we look, which is why the token and not `current` decides */
+  if (navSeq !== gen) return "cancelled";
+  if (current && current.kind === "write") return "cancelled";
+  return await probeOnce(gen);            // "cancelled" survives: === true made it "bad"
+}
+
+async function pushOnce(target) {
+  abortCurrent();                          // a host tap outranks a background read
+  const url = `${API}/state?r=${encodeURIComponent(room)}&k=${encodeURIComponent(key)}&_=${Date.now()}`;
+  const data = await request("write", url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    /* duration only — the deadline instant is the server's to compute */
+    body: JSON.stringify({ screen: target, secs: secsFor(target) }),
+  }, WRITE_MS);
+  if (data.updatedAt !== undefined) lastUpdatedAt = data.updatedAt;
+  lastErr = "";
+  applyState(data);                // the server's answer, which may be
+  lastOkAt = Date.now(); haveData = true;  // another device's write if it won
+  consecFails = 0; pushErr = ""; forceOffline = false;
+  /* The stopwatch exists only while the host is cut off, so ANY confirmed
+     write retires it — matching the screen was an implementation detail, and
+     it left a stale stopwatch behind whenever recovery happened on a later
+     screen. Cleared only on success: clearing when the write STARTED would
+     destroy the only clock the host had if that write then failed. */
+  if (localEnds !== null) clearLocal();
+}
+
+async function push(target) {
+  /* The indicator belongs to this write. An older, superseded write finishing
+     later must not switch off the signal for the one that replaced it. */
+  const mine = ++sendSeq;
+  navSeq++;
+  armLocal(target);            // before the first attempt, so a retry sends what is LEFT
+  pushErr = "";
+  sendingSince = Date.now();
+  /* Only surfaced after 400ms: a healthy write finishes long before that, so
+     the host sees nothing on a good network and a clear signal on a bad one. */
+  setTimeout(() => { if (sendSeq === mine && sendingSince) render(); }, 450);
+
+  let attempt = 0;
+  try {
+    while (true) {
+      try {
+        await pushOnce(target);
+        return;                                            // confirmed by the server
+      } catch (e) {
+        if (e && e.name === "Superseded") return;          // a newer tap owns it now
+        lastErr = (e && (e.name + ": " + e.message)) || String(e);
+        if (e && e.message === "bad key") { pushErr = "bad key"; return; }
+        if (++attempt < 2) {
+          await new Promise(r => setTimeout(r, 200));
+          /* pushOnce() aborts whatever is in flight, so without this check a
+             retry waking from the pause would kill a newer tap and win with a
+             stale target. Newest host action always wins. */
+          if (sendSeq !== mine) return;
+          continue;
+        }
+        /* Two failed attempts is evidence, not a blip. Hand the host local
+           control now rather than making them wait out OFF_MS wondering why
+           the button does nothing. */
+        forceOffline = true;
+        goManual(target);   // the connection can still look live when Back is pressed,
+        pushErr = "";       // so this is the other way a stale deadline survived
+        return;
+      }
+    }
+  } finally {
+    if (sendSeq === mine) sendingSince = 0;
+    render();
+  }
+}
+
+function quietPause() { return QUIET && consecFails >= 2 && Date.now() < nextTryAt; }
+function quietLeft()  { return Math.max(0, Math.ceil((nextTryAt - Date.now()) / 1000)); }
+function kick() { if (PREVIEW || current || quietPause()) return; pull(); }
+
+/* ==================================================================
+   CONTROLS
+================================================================== */
+/* Every route into local control goes through here. Leaving a timed screen by
+   hand abandons its deadline, so returning to it later is a fresh entry —
+   exactly what would happen online. There were three ways in and the rule only
+   lived in one of them; a fourth cannot now miss it. */
+/* One deadline for this action, established the moment a timed screen is
+   entered — before the first write attempt, so every retry and any later
+   reassert derives `secs` from it rather than sending the full duration again.
+   It also means a host who advances onto a round while offline already has a
+   running clock instead of a ▶ prompt, which is what happens online. */
+function armLocal(target) {
+  if (!isHost) return;
+  /* Leaving abandons it, so coming back is a fresh entry — which is what
+     happens online, where every arrival writes and the server stamps a new
+     deadline. Cleared before the untimed early return, or a rotation screen
+     in between would preserve the previous round's clock. */
+  if (localScreen !== null && localScreen !== target) clearLocal();
+  const full = (SCREENS[target - 1] || {}).secs || null;
+  if (full === null) return;
+  if (localScreen === target && localEnds !== null) return;   // never restart a running round
+  startLocal(target, full);
+}
+
+function goManual(target) {
+  manual = target;
+  navSeq++;
+  if (endsScreen !== null && target !== endsScreen) { endsAt = null; endsScreen = null; }
+  armLocal(target);            // the offline path never reaches push()
+  saveManual();
+}
+
+function step(delta) {
+  const base = manual !== null ? manual : (screenNo ?? 1);
+  const target = Math.min(MAX_SCREEN, Math.max(1, base + delta));
+  if (PREVIEW) { screenNo = target; render(); return; }
+  const live = haveData && !forceOffline && (Date.now() - lastOkAt) <= OFF_MS;
+  if (isHost && live) { push(target); return; }
+  goManual(target);
+  render();
+}
+$("next").onclick = () => step(1);
+$("prev").onclick = () => step(-1);
+
+/* iOS Safari does not apply :active on touch unless the document carries a
+   touch listener, and even where it does a tap can be too brief to see. Pointer
+   events sidestep both. Nothing here calls preventDefault or stopPropagation,
+   so the click still reaches the document listener that holds the wake lock. */
+(function armPress() {
+  const MIN_MS = 120;                     // a fast tap must still be visible
+  ["prev", "next", "help", "helpclose"].forEach((id) => {
+    const b = $(id);
+    if (!b) return;
+    let at = 0, timer = null;
+    b.addEventListener("pointerdown", () => {
+      clearTimeout(timer);
+      at = Date.now();
+      b.classList.add("pressed");
+    });
+    const release = () => {
+      clearTimeout(timer);
+      const left = Math.max(0, MIN_MS - (Date.now() - at));
+      timer = setTimeout(() => b.classList.remove("pressed"), left);
+    };
+    ["pointerup", "pointercancel", "pointerleave"].forEach((e) => b.addEventListener(e, release));
+  });
+})();
+/* The digits are the control. Tap starts it; once running a tap does nothing,
+   because a stray tap silently resetting the round clock is worse than not
+   being able to restart. A deliberate 1s hold resets — the same gesture the
+   app already uses for anything irreversible. */
+(function armStopwatch() {
+  const el = $("hostclock");
+  if (!el) return;
+  let timer = null, acted = false;
+  const target = () => {
+    if (!hostLocal()) return null;
+    const shown = manual !== null ? manual : screenNo;
+    const scr = shown === null ? null : SCREENS[shown - 1];
+    return scr && scr.secs ? { shown, secs: scr.secs } : null;
+  };
+  el.addEventListener("pointerdown", () => {
+    const t = target();
+    if (!t) return;
+    acted = false;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      acted = true;
+      startLocal(t.shown, t.secs);                       // reset
+      try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
+      render();
+    }, 1000);
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach((e) =>
+    el.addEventListener(e, () => { clearTimeout(timer); timer = null; }));
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
+  el.addEventListener("click", () => {
+    if (acted) { acted = false; return; }                // the hold already did it
+    const t = target();
+    if (!t) return;
+    if (localScreen === t.shown && localEnds !== null) return;   // already running
+    startLocal(t.shown, t.secs);
+    render();
+  });
+})();
+
+$("retry").onclick = () => { abortCurrent(); lastErr = ""; pushErr = ""; nextTryAt = 0; pull(); };
+
+$("hard").onclick = async () => {
+  /* offline this would delete the cache the app is running from, then fail to
+     reload — turning "working offline" into a dead tab */
+  if (!navigator.onLine) {
+    pushErr = "reset blocked while offline";
+    render();
+    setTimeout(() => { pushErr = ""; render(); }, 4000);
+    return;
+  }
+  try {
+    if (navigator.serviceWorker) {
+      const rs = await navigator.serviceWorker.getRegistrations();
+      const here = new URL("./", location.href).href;
+      await Promise.all(rs.filter(r => r.scope === here).map(r => r.unregister()));
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter(k => k.startsWith(SW_CACHE)).map(k => caches.delete(k)));
+    }
+    localStorage.removeItem("st_screen_" + room);
+    localStorage.removeItem("st_manual_" + room);
+  } catch (e) {}
+  location.reload();
+};
+
+/* The bar and the panel are one object that follows the finger, both ways.
+   Gestures live on the bar only, so a long tip can scroll without fighting a
+   swipe-to-close. */
+const BAR_H = 46;
+let tipsOpen = false;
+
+function maskBottom() {
+  const c = $("controls");
+  if (!c) return;
+  const r = c.getBoundingClientRect();
+  /* +14: rect.top is measured AFTER any margin, so anchoring straight to it
+     put the gap above the bar instead of below it */
+  document.documentElement.style.setProperty(
+    "--maskbot", Math.max(0, Math.round(window.innerHeight - r.top) + 14) + "px");
+}
+const closedY = () => Math.max(0, $("tipsheet").offsetHeight - BAR_H);
+
+/* Measured with every dropdown collapsed, then frozen for the life of the
+   screen. Without this the sheet is height:auto and anchored to the bottom, so
+   opening a dropdown grew it upward and the black bar — the drag handle you
+   are reaching for — moved under your thumb. Frozen, the extra content goes to
+   #notes, which shrinks and scrolls instead. */
+function lockSheet() {
+  const sheet = $("tipsheet");
+  if (!sheet) return;
+  sheet.style.height = "";                       // back to auto to read the natural size
+  sheet.style.height = sheet.offsetHeight + "px"; // already capped by max-height
+}
+function setTips(open, glide) {
+  tipsOpen = open;
+  const sheet = $("tipsheet");
+  sheet.classList.toggle("glide", !!glide);
+  sheet.style.transform = "translateY(" + (open ? 0 : closedY()) + "px)";
+  document.body.classList.toggle("tipsopen", open);
+}
+
+(function armTips() {
+  const bar = $("tipsbar"), sheet = $("tipsheet");
+  if (!bar || !sheet) return;
+  let y0 = null, base = 0, moved = 0;
+
+  bar.addEventListener("pointerdown", (e) => {
+    maskBottom();
+    y0 = e.clientY; moved = 0;
+    base = tipsOpen ? 0 : closedY();
+    sheet.classList.remove("glide");
+    try { bar.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+
+  bar.addEventListener("pointermove", (e) => {
+    if (y0 === null) return;
+    const dy = e.clientY - y0;
+    moved = Math.max(moved, Math.abs(dy));
+    const y = Math.min(closedY(), Math.max(0, base + dy));
+    sheet.style.transform = "translateY(" + y + "px)";   // tracks the finger
+  });
+
+  const finish = (e) => {
+    if (y0 === null) return;
+    const dy = (e && e.clientY !== undefined ? e.clientY : y0) - y0;
+    y0 = null;
+    /* Capped: a third of the travel meant a 630px drawer needed a 195px drag,
+       so the sheets that most need dismissing were the hardest to dismiss.
+       Small drawers keep the proportion; large ones stop at a thumb's length. */
+    const third = Math.max(28, Math.min(closedY() / 3, 72));
+    if (moved < 8) { setTips(!tipsOpen, true); return; }          // a tap, not a drag
+    if (tipsOpen) setTips(!(dy > third), true);                   // dragged down far enough closes
+    else          setTips(-dy > third, true);                     // dragged up far enough opens
+  };
+  ["pointerup", "pointercancel"].forEach((ev) => bar.addEventListener(ev, finish));
+  bar.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  const mask = $("tipsmask");
+  if (mask) mask.addEventListener("click", (e) => {
+    if (e.target === mask && tipsOpen) setTips(false, true);   // the sheet itself never bubbles here
+  });
+})();
+
+/* Host only. Two seconds, and the header fills for the whole of it, because
+   this sends the entire room back to screen 1. */
+(function armHome() {
+  const el = $("home");
+  if (!el) return;
+  let timer = null;
+  const cancel = () => {
+    clearTimeout(timer); timer = null;
+    el.classList.remove("pressing");
+    document.body.classList.remove("holding");
+  };
+  el.addEventListener("pointerdown", (e) => {
+    if (!isHost) return;
+    /* The status banner can disappear mid-hold, which moves the header out from
+       under a stationary mouse — without capture that fires pointerleave and
+       silently kills a valid hold. */
+    try { el.setPointerCapture(e.pointerId); } catch (err) {}
+    clearTimeout(timer);
+    el.classList.add("pressing");
+    document.body.style.setProperty("--holddur", "2s");
+    document.body.classList.add("holding");
+    timer = setTimeout(() => {
+      cancel();
+      try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
+      if (PREVIEW) { screenNo = 1; render(); return; }
+      const live = haveData && !forceOffline && (Date.now() - lastOkAt) <= OFF_MS;
+      if (live) push(1); else { goManual(1); render(); }   // same path as any other host move
+    }, 2000);
+  });
+  ["pointerup", "pointercancel"].forEach((e) => el.addEventListener(e, cancel));
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
+})();
+
+/* Guest self-serve sheet. No network, no state — it answers the three questions
+   a guest actually has and closes on an advance like the host's own panel. */
+(function armHelp() {
+  const sheet = $("helpsheet"), open = $("help"), shut = $("helpclose");
+  if (!sheet || !open) return;
+  const set = (v) => { sheet.hidden = !v; };
+  open.addEventListener("click", () => set(true));
+  if (shut) shut.addEventListener("click", () => set(false));
+  sheet.addEventListener("click", (e) => { if (e.target === sheet) set(false); });
+})();
+
+/* Deliberately not a visible control. A guest only needs this when the host
+   says so out loud, and a button on screen would invite taps that break a room
+   which is working fine. The target is the target now; it becomes the logo
+   in the same slot later. */
+(function armLongPress() {
+  const el = $("logowrap");
+  if (!el) return;
+  let timer = null, armTimer = null;
+  const cancel = () => {
+    clearTimeout(timer); clearTimeout(armTimer); timer = null;
+    el.classList.remove("pressing");
+    document.body.classList.remove("holding");
+  };
+  el.addEventListener("pointerdown", () => {
+    if (isHost || PREVIEW) return;
+    clearTimeout(timer);
+    /* Nothing visible for 500ms. A tap tops out around 250ms, so a poke shows
+       no flicker at all — and the flicker is what would invite a curious guest
+       to hold and find out what it does. */
+    armTimer = setTimeout(() => {
+      el.classList.add("pressing");
+      document.body.style.setProperty("--holddur", "1s");
+      document.body.classList.add("holding");    // the header fills, 500 -> 1500ms
+    }, 500);
+    timer = setTimeout(() => {
+      cancel();
+      if (detached) {                       // second hold rejoins by hand
+        detached = false; detachScreen = null; manual = null;
+        clearManual();
+      } else {
+        detached = true;
+        detachScreen = screenNo;            // the server screen we broke away from
+        saveManual();
+        manual = screenNo ?? 1;
+      }
+      try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
+      render();
+    }, 1500);
+  });
+  ["pointerup", "pointerleave", "pointercancel"].forEach(ev => el.addEventListener(ev, cancel));
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
+})();
+
+document.addEventListener("keydown", (e) => {
+  if (!(isHost || PREVIEW || detached || document.body.classList.contains("offline"))) return;
+  if (e.key === "ArrowRight") step(1);
+  if (e.key === "ArrowLeft")  step(-1);
+});
+
+/* ==================================================================
+   WAKE LOCK — unchanged from v11
+================================================================== */
+function setWakeState(text, on) {
+  const el = $("wakestate");
+  el.textContent = "screen lock: " + text;
+  el.classList.toggle("on", !!on);
+}
+
+async function acquireWakeLock(quiet) {
+  if (!("wakeLock" in navigator)) { setWakeState("not supported", false); return; }
+  if (wakeLock) { setWakeState("held", true); return; }
+  /* Screen 3's button and the document-level fallback both see the same tap,
+     and the held-check above sits before an await — so without this both would
+     request a sentinel and one would go untracked. */
+  if (wakePending) return;
+  if (document.visibilityState !== "visible") return;
+  wakePending = true;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    setWakeState("held", true);
+    wakeLock.addEventListener("release", () => { wakeLock = null; setWakeState("released — tap the screen", false); });
+  } catch (e) {
+    wakeLock = null;
+    setWakeState(quiet ? "tap the screen to keep it on"
+                       : "refused (" + (e.name || "error") + ") — check Low Power Mode", false);
+  } finally { wakePending = false; }
+}
+/* Permanent, not one-shot. The old version unbound itself after the first
+   success, so if re-acquisition ever failed later there was no second chance
+   for the rest of the night. Held lock => this is a no-op. */
+document.addEventListener("click", () => { if (!wakeLock) acquireWakeLock(true); }, { passive: true });
+
+/* ==================================================================
+   LIFECYCLE — unchanged from v11
+================================================================== */
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  kick();
+  /* a frame's grace — iOS refuses a request made in the same tick as the
+     visibility change, which is exactly the lock/unlock case */
+  setTimeout(() => acquireWakeLock(true), 60);
+});
+window.addEventListener("resize", () => {
+  scheduleFit(); maskBottom();
+  /* remeasured from the current state: force-collapsing an open special case
+     under the host mid-rotation would be worse than a slightly taller sheet */
+  if (isHost) { lockSheet(); setTips(tipsOpen, false); }
+});
+window.addEventListener("online",   kick);
+/* Safari requires a user gesture, so on iPhone this is refused and the
+   permanent tap-anywhere fallback picks it up on the very next touch. Chrome
+   does not require one, so Android guests get it without touching anything. */
+window.addEventListener("pageshow", () => { kick(); setTimeout(() => acquireWakeLock(true), 60); });
+
+const noSW = params.get("nosw") === "1";
+if ("serviceWorker" in navigator) {
+  if (noSW) {
+    swState = "disabled";
+    /* Same scope filter Hard reset uses. Every GitHub Pages repository shares
+       one origin, so an unfiltered unregister would take out other projects. */
+    const here = new URL("./", location.href).href;
+    navigator.serviceWorker.getRegistrations()
+      .then(rs => Promise.all(rs.filter(r => r.scope === here).map(r => r.unregister())))
+      .catch(() => {});
+  } else {
+    swState = navigator.serviceWorker.controller ? "controlling" : "registering";
+    navigator.serviceWorker.register("sw.js")
+      .then(() => { swState = navigator.serviceWorker.controller ? "controlling" : "registered"; })
+      .catch(() => { swState = "failed"; });
+  }
+} else { swState = "unsupported"; }
+
+/* Ask the worker to store every screen's artwork up front, so a phone that
+   drops off the network mid-event still has screen 29's image. The list is
+   derived from the screen data — there is no second list to keep in sync.
+   Deferred so a slow venue connection never blocks the app from being usable. */
+function precache() {
+  const sw = navigator.serviceWorker;
+  if (!sw) return;
+  /* Deliberately unguarded. A page-side "only once" flag broke the worker
+     upgrade: `load` fired first and consumed it while the outgoing worker was
+     still controlling, so the `controllerchange` call — the one that would
+     have filled the NEW cache — did nothing, and the app had no shell to open
+     offline. A repeat run on the same build now costs zero fetches, and the
+     worker itself ignores overlapping runs. */
+  const assets = ["./", LOGO_MARK, LOGO_FULL]
+    .concat(SCREENS.filter(s => s.img).map(s => imgSrc(s.img)))
+    .concat([imgSrc(ROTATE_IMG)]);
+  /* ready resolves once a worker is active — waiting on `controller` missed the
+     very first load, when there is not one yet, so the artwork was only stored
+     on the second visit. */
+  sw.ready.then((reg) => {
+    const target = reg.active || sw.controller;
+    /* VERSION moves on every build, so the worker can tell a new release from
+       a repeat visit and refetch artwork only when something actually shipped. */
+    if (target) target.postMessage({ type: "precache", assets, build: VERSION });
+  }).catch(() => {});
+}
+if ("serviceWorker" in navigator && !noSW) {
+  navigator.serviceWorker.addEventListener("controllerchange", () => setTimeout(precache, 1500));
+  window.addEventListener("load", () => setTimeout(precache, 1500));
+}
+
+function nextDelay() {
+  if (consecFails === 0) return POLL_MS;
+  if (QUIET && consecFails >= 2) return QUIET_MS;
+  return RETRY_MS;
+}
+function loop() {
+  pull().finally(() => {
+    const d = nextDelay();
+    nextTryAt = Date.now() + d;
+    if (QUIET && consecFails >= 2 && !quietSince) quietSince = Date.now();
+    if (consecFails === 0) quietSince = 0;
+    setTimeout(loop, d);
+  });
+}
+if (!PREVIEW) loop();
+render();
+if (isHost) { maskBottom(); setTips(false, false); }
+setInterval(render, 1000);
+</script>
+</body>
+</html>
